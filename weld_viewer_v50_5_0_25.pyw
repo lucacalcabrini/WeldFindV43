@@ -145,20 +145,6 @@ try:
 except ImportError:
     pass  # Tab PLC Reader mostra avviso
 
-# ── OPC UA (opzionale, per lettura via OPC UA integrato) ────
-OPCUA_AVAILABLE = False
-OPCUA_LIB = None
-try:
-    pass  # opcua rimossa
-    OPCUA_AVAILABLE = True
-    OPCUA_LIB = "opcua"
-except ImportError:
-    try:
-        from asyncua.sync import Client as OpcClient
-        OPCUA_AVAILABLE = True
-        OPCUA_LIB = "asyncua"
-    except ImportError:
-        pass  # Tab OPC UA mostra avviso
 
 import struct
 import datetime
@@ -846,7 +832,6 @@ ENTRY_BG = "#161b22"; SIM_CLR = "#d2a8ff"; DET_CLR = "#ff6e85"
 STAT_CLR = "#f9c74f"; ERR_CLR  = "#FF6B6B"; CIAN_CLR = "#4fc3f7"
 UDT_CLR  = CIAN_CLR    # colore per campi UDT IO_RicercaSaldatura
 PLC_CLR  = "#f0883e"   # colore per tab PLC Reader
-OPCUA_CLR = "#9b59b6"  # colore per tab OPC UA
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1140,583 +1125,6 @@ class PLCReader:
 
 
 # ──────────────────────────────────────────────────────────────
-#  OPC UA READER – Lettura DB WeldFind via OPC UA integrato S7-1500
-# ──────────────────────────────────────────────────────────────
-
-# Variabili "firma" per identificare un DB come WeldFind
-_OPCUA_WELDFIND_SIGNATURE = {
-    "arSamples", "arAngles", "arThreshHigh", "arThreshLow",
-    "I_SigmaFactor", "I_BaselineWindowDeg", "iSamplesAcquired",
-}
-_OPCUA_MIN_MATCH = 4   # minimo variabili firma per considerarlo WeldFind
-
-# Tutti gli scalari da leggere
-_OPCUA_ALL_SCALARS = _PLC_SCALAR_PRE + _PLC_SCALAR_POST
-
-# Tipo FB da cercare nell'XML OPC UA export
-_OPCUA_FB_TYPE_PATTERN = "Fb954_WeldFindV47"
-
-
-def opcua_parse_xml_weldfind(filepath, callback=None):
-    """
-    Parser VELOCE per file XML esportato dal server OPC UA S7-1500.
-
-    Usa iterparse per gestire file 100+ MB senza caricare tutto in RAM.
-    Cerca <UAObject> con HasTypeDefinition contenente 'Fb954_WeldFindV43',
-    poi raccoglie le <UAVariable> figlie con i NodeId esatti.
-
-    BUG-FIX: elem.clear() solo su UAObject/UAVariable processati
-    (non su ogni elemento, altrimenti distrugge i figli Reference
-    prima che il parent venga letto).
-    """
-    import xml.etree.ElementTree as ET
-
-    file_size = os.path.getsize(filepath)
-
-    def strip_ns(tag):
-        """Rimuove namespace URI: {http://...}UAObject → UAObject"""
-        return tag.split('}', 1)[1] if '}' in tag else tag
-
-    def find_child(elem, child_tag_name):
-        """Trova un figlio per nome, ignorando namespace XML."""
-        for ch in elem:
-            if strip_ns(ch.tag) == child_tag_name:
-                return ch
-        return None
-
-    def get_ref_texts(elem, ref_type_name):
-        """Estrae i testi dei Reference con un dato ReferenceType."""
-        refs = find_child(elem, "References")
-        if refs is None:
-            return []
-        results = []
-        for ref in refs:
-            if strip_ns(ref.tag) == "Reference":
-                if ref.get("ReferenceType", "") == ref_type_name:
-                    results.append(ref.text or "")
-        return results
-
-    # ── Passo 1: scansione iterativa ──
-    weldfind_dbs = {}   # node_id → db_info
-    all_variables = []  # lista di tutte le UAVariable trovate
-
-    elem_count = 0
-    context = ET.iterparse(filepath, events=("end",))
-
-    for event, elem in context:
-        elem_count += 1
-
-        if callback and elem_count % 50000 == 0:
-            pct = min(90, elem_count // 5000)
-            callback(pct, f"Analisi XML... {elem_count} elementi")
-
-        tag = strip_ns(elem.tag)
-
-        if tag == "UAObject":
-            # ── Controlla se è un DB WeldFind ──
-            # Tutti i figli (References, DisplayName) sono intatti a questo punto
-            node_id = elem.get("NodeId", "")   # ElementTree unescape &quot; → "
-            browse_name = elem.get("BrowseName", "")
-            parent_nid = elem.get("ParentNodeId", "")
-
-            # Cerca HasTypeDefinition contenente il pattern FB
-            type_refs = get_ref_texts(elem, "HasTypeDefinition")
-            type_ref_match = ""
-            for tr in type_refs:
-                if _OPCUA_FB_TYPE_PATTERN in tr:
-                    type_ref_match = tr
-                    break
-
-            if type_ref_match:
-                name = browse_name.split(":", 1)[-1] if ":" in browse_name else browse_name
-                weldfind_dbs[node_id] = {
-                    "name": name,
-                    "node_id": node_id,
-                    "type_ref": type_ref_match,
-                    "source": "xml",
-                    "variables": {},
-                    "var_count": 0,
-                }
-
-            # ★ Clear SOLO dopo aver processato (libera References e figli)
-            elem.clear()
-
-        elif tag == "UAVariable":
-            # ── Raccogli info variabile ──
-            var_node_id = elem.get("NodeId", "")
-            var_datatype = elem.get("DataType", "")
-            var_browse = elem.get("BrowseName", "")
-            var_arr_dim = elem.get("ArrayDimensions", "")
-
-            # Estrai DisplayName
-            dn_elem = find_child(elem, "DisplayName")
-            var_name = (dn_elem.text or "") if dn_elem is not None else ""
-            if not var_name:
-                var_name = var_browse.split(":", 1)[-1] if ":" in var_browse else var_browse
-
-            if var_name and var_node_id:
-                all_variables.append({
-                    "name": var_name,
-                    "node_id": var_node_id,
-                    "datatype": var_datatype,
-                    "array_dim": var_arr_dim,
-                })
-
-            # ★ Clear SOLO dopo aver processato
-            elem.clear()
-
-        # ★ NON fare clear su altri tag (Reference, DisplayName, ecc.)
-        #    Vengono puliti quando il parent UAObject/UAVariable fa clear.
-
-    # ── Passo 2: Associa variabili ai DB WeldFind ──
-    if callback:
-        callback(92, f"Associazione variabili ({len(all_variables)} vars, {len(weldfind_dbs)} DB)...")
-
-    # Per ogni variabile, controlla se il suo NodeId inizia con un NodeId DB
-    # es: ns=3;s="DbTestSaldCirc1"."I_LaserValue" inizia con ns=3;s="DbTestSaldCirc1"
-    # Ordina i DB per lunghezza NodeId decrescente (match più specifico prima)
-    db_nids_sorted = sorted(weldfind_dbs.keys(), key=len, reverse=True)
-
-    for var in all_variables:
-        vnid = var["node_id"]
-        for db_nid in db_nids_sorted:
-            if vnid.startswith(db_nid) and vnid != db_nid:
-                weldfind_dbs[db_nid]["variables"][var["name"]] = {
-                    "node_id": var["node_id"],
-                    "datatype": var["datatype"],
-                    "array_dim": var["array_dim"],
-                }
-                break
-
-    # Aggiorna conteggi
-    for db in weldfind_dbs.values():
-        db["var_count"] = len(db["variables"])
-
-    result = list(weldfind_dbs.values())
-
-    if callback:
-        callback(100, f"Trovati {len(result)} DB WeldFind, {sum(d['var_count'] for d in result)} variabili")
-
-    return result
-
-
-class OpcUaWeldFindReader:
-    """Lettura DB WeldFind via OPC UA integrato nella CPU S7-1500."""
-
-    def __init__(self, endpoint="opc.tcp://192.168.0.1:4840",
-                 timeout=10.0, username=None, password=None):
-        if not OPCUA_AVAILABLE:
-            raise ImportError(
-                "Libreria OPC UA non trovata!\n"
-                "Installa con:  pip install opcua\n"
-                "Oppure:        pip install asyncua")
-        self.endpoint = endpoint
-        self.timeout = timeout
-        self.client = None
-        self._connected = False
-        self._username = username
-        self._password = password
-        self._ns_idx = None  # namespace index S7
-
-    def connect(self):
-        """Connette al server OPC UA. Ritorna dict info."""
-        try:
-            self.client = OpcClient(self.endpoint, timeout=self.timeout)
-            if self._username and self._password:
-                self.client.set_user(self._username)
-                self.client.set_password(self._password)
-            self.client.connect()
-            self._connected = True
-            ns_array = self.client.get_namespace_array()
-            self._ns_idx = None
-            for i, ns in enumerate(ns_array):
-                if "siemens" in ns.lower() or "simatic" in ns.lower() or "s7" in ns.lower():
-                    self._ns_idx = i;  break
-            if self._ns_idx is None:
-                self._ns_idx = 3  # default S7-1500
-            server_name = "S7 OPC UA Server"
-            try:
-                server_name = self.client.get_server_node().get_display_name().Text
-            except Exception:
-                pass
-            return {"endpoint": self.endpoint, "namespaces": ns_array,
-                    "s7_namespace_idx": self._ns_idx, "server_name": server_name}
-        except Exception as e:
-            self._connected = False
-            raise ConnectionError(
-                f"Connessione OPC UA fallita: {e}\n\n"
-                f"Verificare:\n"
-                f"  1) Server OPC UA abilitato nella CPU\n"
-                f"  2) Endpoint: {self.endpoint}\n"
-                f"  3) Porta 4840 raggiungibile") from e
-
-    def disconnect(self):
-        if self.client and self._connected:
-            try: self.client.disconnect()
-            except Exception: pass
-            self._connected = False
-
-    @property
-    def is_connected(self):
-        return self._connected
-
-    def browse_all_dbs(self):
-        """Elenca tutti i DataBlock accessibili. Ritorna lista di dict."""
-        if not self._connected:
-            raise ConnectionError("Non connesso")
-        dbs = []
-        root = self.client.get_objects_node()
-        # Cerca cartelle DataBlocks
-        db_folders = self._find_nodes(root, [
-            "DataBlocksGlobal", "DataBlocksInstance",
-            "Data blocks", "Global-DBs"
-        ], max_depth=3)
-        if not db_folders:
-            db_folders = [root]
-        for folder in db_folders:
-            try:
-                for child in folder.get_children():
-                    try:
-                        name = child.get_display_name().Text
-                        nc = child.get_node_class()
-                        if nc == opcua_ua.NodeClass.Object:
-                            dbs.append({"name": name,
-                                        "node_id": str(child.nodeid),
-                                        "node": child})
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-        return dbs
-
-    def browse_weldfind_dbs(self, callback=None):
-        """Trova DB di tipo WeldFind. Ritorna lista con info."""
-        all_dbs = self.browse_all_dbs()
-        wf_dbs = []
-        for i, db in enumerate(all_dbs):
-            if callback:
-                callback(int((i+1)/max(len(all_dbs),1)*100),
-                         f"Scansione {db['name']}...")
-            try:
-                child_names = set()
-                children = db["node"].get_children()
-                for ch in children:
-                    try: child_names.add(ch.get_display_name().Text)
-                    except Exception: continue
-                matched = _OPCUA_WELDFIND_SIGNATURE & child_names
-                if len(matched) >= _OPCUA_MIN_MATCH:
-                    info = dict(db)
-                    info["match_score"] = len(matched)
-                    info["samples"] = 0
-                    info["polarity"] = 0
-                    info["state"] = 0
-                    # Lettura rapida info
-                    for ch in children:
-                        try:
-                            cn = ch.get_display_name().Text
-                            if cn == "iSamplesAcquired":
-                                info["samples"] = int(ch.get_value())
-                            elif cn == "I_PeakPolarity":
-                                info["polarity"] = int(ch.get_value())
-                            elif cn == "iState":
-                                info["state"] = int(ch.get_value())
-                        except Exception: continue
-                    wf_dbs.append(info)
-            except Exception:
-                continue
-        return wf_dbs
-
-    def read_weldfind_db(self, db_name, max_samples=2001, callback=None):
-        """Legge un DB WeldFind completo. Ritorna dict compatibile col viewer."""
-        if not self._connected:
-            raise ConnectionError("Non connesso")
-        result = {"scalars": {}, "arrays": {},
-                  "raw_text": "",
-                  "filename": f"OpcUA_{db_name}_{datetime.datetime.now():%Y%m%d_%H%M%S}.db"}
-
-        db_node = self._get_db_node(db_name)
-        if db_node is None:
-            raise ValueError(
-                f"DB '{db_name}' non trovato.\n"
-                f"Verificare DB_Accessible_From_OPC_UA = TRUE")
-
-        # Mappa figli
-        child_map = {}
-        for ch in db_node.get_children():
-            try: child_map[ch.get_display_name().Text] = ch
-            except Exception: continue
-
-        total = len(_OPCUA_ALL_SCALARS) + len(_PLC_ARRAY_ORDER)
-        step = 0
-
-        # ── Scalari ──
-        if callback: callback(0, "Lettura scalari...")
-        for vn in _OPCUA_ALL_SCALARS:
-            step += 1
-            if vn in child_map:
-                try:
-                    raw = child_map[vn].get_value()
-                    if vn in _PLC_BOOL_VARS:
-                        result["scalars"][vn] = bool(raw)
-                    elif vn in _PLC_INT_VARS:
-                        result["scalars"][vn] = int(raw)
-                    else:
-                        result["scalars"][vn] = float(raw)
-                except Exception:
-                    if vn in _PLC_BOOL_VARS: result["scalars"][vn] = False
-                    elif vn in _PLC_INT_VARS: result["scalars"][vn] = 0
-                    else: result["scalars"][vn] = 0.0
-            if callback and step % 10 == 0:
-                callback(int(step/total*50), f"Scalari: {vn}")
-
-        # ── Array ──
-        n_samp = int(result["scalars"].get("iSamplesAcquired", 0))
-        read_n = min(max(n_samp + 1, 1), max_samples)
-
-        for ai, an in enumerate(_PLC_ARRAY_ORDER):
-            if callback:
-                callback(50 + int((ai+1)/len(_PLC_ARRAY_ORDER)*50),
-                         f"Array {an}...")
-            if an in child_map:
-                arr = self._read_array(child_map[an], read_n, db_name)
-                result["arrays"][an] = arr if arr else [0.0] * read_n
-            else:
-                result["arrays"][an] = [0.0] * read_n
-
-        # Genera raw_text .db per compatibilità viewer
-        result["raw_text"] = self._gen_db_text(result, db_name, max_samples)
-        if callback: callback(100, "Completato!")
-        return result
-
-    def read_weldfind_db_xml(self, xml_db_info, max_samples=2001, callback=None):
-        """
-        Lettura VELOCE con NodeId pre-estratti dal file XML OPC UA.
-        
-        Salta completamente il browse: accede alle variabili per NodeId diretto.
-        
-        Args:
-            xml_db_info: dict da opcua_parse_xml_weldfind() con chiave 'variables'
-            max_samples: max campioni array
-            callback: callback(pct, msg) per progresso
-            
-        Returns:
-            dict compatibile col viewer (scalars, arrays, raw_text, filename)
-        """
-        if not self._connected:
-            raise ConnectionError("Non connesso")
-        db_name = xml_db_info["name"]
-        xml_vars = xml_db_info.get("variables", {})
-        
-        result = {"scalars": {}, "arrays": {},
-                  "raw_text": "",
-                  "filename": f"OpcUA_{db_name}_{datetime.datetime.now():%Y%m%d_%H%M%S}.db"}
-
-        total = len(_OPCUA_ALL_SCALARS) + len(_PLC_ARRAY_ORDER)
-        step = 0
-
-        # ── Scalari: lettura diretta per NodeId ──
-        if callback: callback(0, "Lettura scalari (XML-guided)...")
-        for vn in _OPCUA_ALL_SCALARS:
-            step += 1
-            if vn in xml_vars:
-                nid_str = xml_vars[vn]["node_id"]
-                try:
-                    node = self.client.get_node(nid_str)
-                    raw = node.get_value()
-                    if vn in _PLC_BOOL_VARS:    result["scalars"][vn] = bool(raw)
-                    elif vn in _PLC_INT_VARS:   result["scalars"][vn] = int(raw)
-                    else:                       result["scalars"][vn] = float(raw)
-                except Exception:
-                    if vn in _PLC_BOOL_VARS:    result["scalars"][vn] = False
-                    elif vn in _PLC_INT_VARS:   result["scalars"][vn] = 0
-                    else:                       result["scalars"][vn] = 0.0
-            if callback and step % 15 == 0:
-                callback(int(step / total * 40), f"Scalari... {vn}")
-
-        # ── Array: lettura per NodeId con indice ──
-        n_samp = int(result["scalars"].get("iSamplesAcquired", 0))
-        read_n = min(max(n_samp + 1, 1), max_samples)
-
-        for ai, an in enumerate(_PLC_ARRAY_ORDER):
-            if callback:
-                callback(40 + int((ai + 1) / len(_PLC_ARRAY_ORDER) * 55),
-                         f"Array {an} ({read_n} el.)...")
-            
-            if an in xml_vars:
-                # Il NodeId dell'array è noto, prova lettura nodo array
-                arr_nid = xml_vars[an]["node_id"]
-                try:
-                    arr_node = self.client.get_node(arr_nid)
-                    arr = self._read_array(arr_node, read_n, db_name)
-                    if arr:
-                        result["arrays"][an] = arr
-                        continue
-                except Exception:
-                    pass
-                
-                # Fallback: lettura per indice usando formato NodeId dall'XML
-                # es: ns=3;s="DbTestSaldCirc1"."arSamples"[0]
-                # Costruiamo il pattern dal NodeId base della variabile
-                arr = [0.0] * read_n
-                base_nid = arr_nid  # es: ns=3;s="DbTestSaldCirc1"."arSamples"
-                batch = 50
-                for start in range(0, read_n, batch):
-                    end = min(start + batch, read_n)
-                    bnodes = []
-                    for i in range(start, end):
-                        try:
-                            nid = f'{base_nid}[{i}]'
-                            bnodes.append((i, self.client.get_node(nid)))
-                        except Exception:
-                            continue
-                    if bnodes:
-                        try:
-                            vals = self.client.get_values([n for _, n in bnodes])
-                            for (i, _), v in zip(bnodes, vals):
-                                arr[i] = float(v)
-                        except Exception:
-                            for i, n in bnodes:
-                                try: arr[i] = float(n.get_value())
-                                except Exception: pass
-                result["arrays"][an] = arr
-            else:
-                result["arrays"][an] = [0.0] * read_n
-
-        result["raw_text"] = self._gen_db_text(result, db_name, max_samples)
-        if callback: callback(100, "Completato!")
-        return result
-
-    # ── Metodi interni ────────────────────────────────────────
-
-    def _get_db_node(self, db_name):
-        ns = self._ns_idx
-        # Tentativo 1: con virgolette
-        for fmt in [f'ns={ns};s="{db_name}"', f'ns={ns};s={db_name}']:
-            try:
-                node = self.client.get_node(fmt)
-                _ = node.get_display_name()
-                return node
-            except Exception: pass
-        # Tentativo 2: browse
-        try:
-            for db in self.browse_all_dbs():
-                if db["name"] == db_name:
-                    return db["node"]
-        except Exception: pass
-        return None
-
-    def _read_array(self, arr_node, count, db_name=""):
-        """Legge array OPC UA con fallback multipli."""
-        # 1: Array intero
-        try:
-            val = arr_node.get_value()
-            if isinstance(val, (list, tuple)):
-                arr = [float(v) for v in val[:count]]
-                return arr + [0.0] * max(0, count - len(arr))
-        except Exception: pass
-
-        # 2: Figli indicizzati
-        try:
-            children = arr_node.get_children()
-            if children:
-                indexed = []
-                for ch in children:
-                    try:
-                        nm = ch.get_display_name().Text.strip("[]")
-                        indexed.append((int(nm), ch))
-                    except Exception: continue
-                indexed.sort(key=lambda x: x[0])
-                nodes = [n for i, n in indexed if i < count]
-                idxs = [i for i, n in indexed if i < count]
-                if nodes:
-                    arr = [0.0] * count
-                    try:
-                        vals = self.client.get_values(nodes)
-                        for idx, v in zip(idxs, vals):
-                            arr[idx] = float(v)
-                    except Exception:
-                        for idx, n in zip(idxs, nodes):
-                            try: arr[idx] = float(n.get_value())
-                            except Exception: pass
-                    return arr
-        except Exception: pass
-
-        # 3: Accesso per NodeId diretto
-        try:
-            an = arr_node.get_display_name().Text
-            ns = self._ns_idx
-            arr = [0.0] * count
-            batch = 50
-            for start in range(0, count, batch):
-                end = min(start + batch, count)
-                bnodes = []
-                for i in range(start, end):
-                    for fmt in [f'ns={ns};s="{db_name}"."{an}"[{i}]',
-                                f'ns={ns};s="{db_name}".{an}[{i}]']:
-                        try:
-                            bnodes.append((i, self.client.get_node(fmt)))
-                            break
-                        except Exception: continue
-                if bnodes:
-                    try:
-                        vals = self.client.get_values([n for _, n in bnodes])
-                        for (i, _), v in zip(bnodes, vals):
-                            arr[i] = float(v)
-                    except Exception:
-                        for i, n in bnodes:
-                            try: arr[i] = float(n.get_value())
-                            except Exception: pass
-            return arr
-        except Exception: pass
-        return None
-
-    def _find_nodes(self, root, names, max_depth=3, _d=0):
-        found = []
-        if _d > max_depth: return found
-        try:
-            for ch in root.get_children():
-                try:
-                    n = ch.get_display_name().Text
-                    if n in names: found.append(ch)
-                    elif _d < max_depth:
-                        found.extend(self._find_nodes(ch, names, max_depth, _d+1))
-                except Exception: continue
-        except Exception: pass
-        return found
-
-    def _gen_db_text(self, data, db_name, max_samples=2001):
-        """Genera testo .db compatibile TIA Portal."""
-        lines = [
-            f'DATA_BLOCK "{db_name}"',
-            "{ DB_Accessible_From_OPC_UA := 'TRUE' ;",
-            " S7_Optimized_Access := 'FALSE' }",
-            "VERSION : 0.1", "NON_RETAIN",
-            f'"{PLC_FB_TYPE_NAME}"', "", "BEGIN",
-        ]
-        sc = data["scalars"];  ar = data["arrays"]
-        def fmt(n, v):
-            if n in _PLC_BOOL_VARS: return "TRUE" if v else "FALSE"
-            if n in _PLC_INT_VARS: return str(int(v))
-            s = f"{v:.7g}"
-            if '.' not in s and 'e' not in s.lower(): s += '.0'
-            return s
-        for n in _PLC_SCALAR_PRE:
-            if n in sc: lines.append(f"   {n} := {fmt(n, sc[n])};")
-        for an in _PLC_ARRAY_ORDER:
-            if an in ar:
-                a = ar[an]
-                for i in range(min(len(a), max_samples)):
-                    v = a[i] if i < len(a) else 0.0
-                    s = f"{v:.7g}"
-                    if '.' not in s and 'e' not in s.lower(): s += '.0'
-                    lines.append(f"   {an}[{i}] := {s};")
-        for n in _PLC_SCALAR_POST:
-            if n in sc: lines.append(f"   {n} := {fmt(n, sc[n])};")
-        lines += ["", "END_DATA_BLOCK", ""]
-        return '\n'.join(lines)
-
-
-# ──────────────────────────────────────────────────────────────
 #  APP
 # ──────────────────────────────────────────────────────────────
 
@@ -1941,7 +1349,6 @@ class WeldViewerApp(tk.Tk):
         self.minsize(1100, 680)
         self.configure(bg=DARK_BG)
         self.db_data = None;  self.comp_data = None;  self.sim_result = None
-        self._opcua_last_data = None;  self._opcua_last_dbname = None
         self._settings = self._load_settings()  # *** v5.0 *** WeldDetectoSetup.par
         # _pv_global_sql_path: path SQLite condiviso da simulatore, statistiche, query
         _default_sql = self._settings.get('sqlite_path',
@@ -1983,7 +1390,7 @@ class WeldViewerApp(tk.Tk):
     # ── CONTROLLO LIBRERIE ALL'AVVIO ────────────────────────
     def _startup_check_libs(self):
         """Verifica all'avvio solo le librerie OBBLIGATORIE (numpy, matplotlib).
-        Il check OPC UA/snap7 avviene quando l'utente abilita il flag."""
+        Il check snap7 avviene quando l'utente abilita il flag."""
         missing = []
 
         try:
@@ -2044,10 +1451,10 @@ class WeldViewerApp(tk.Tk):
         st.configure("UdtResult.TLabel", background=PANEL_BG, foreground=UDT_CLR, font=("Consolas", 10, "bold"))
         st.configure("PlcResult.TLabel", background=PANEL_BG, foreground=PLC_CLR, font=("Consolas", 10, "bold"))
         for name, bg, fg in [("Accent", ACCENT, DARK_BG), ("Sim", SIM_CLR, DARK_BG),
-                               ("Plc", PLC_CLR, DARK_BG), ("Opcua", OPCUA_CLR, DARK_BG)]:
+                               ("Plc", PLC_CLR, DARK_BG)]:
             st.configure(f"{name}.TButton", background=bg, foreground=fg,
                          font=("Consolas", 10, "bold"), padding=(10, 5))
-            hover = {"Accent": "#88c8ff", "Sim": "#d4a7ff", "Plc": "#f5a862", "Opcua": "#b07cc8"}
+            hover = {"Accent": "#88c8ff", "Sim": "#d4a7ff", "Plc": "#f5a862"}
             st.map(f"{name}.TButton", background=[("active", hover.get(name, "#88c8ff"))],
                    foreground=[("active", DARK_BG)])
         st.configure("TButton", background=ENTRY_BG, foreground=TEXT_CLR,
@@ -2248,7 +1655,7 @@ class WeldViewerApp(tk.Tk):
 
     def _update_conn_indicator(self, mode=None):
         """Aggiorna indicatore connessione nella barra superiore.
-        mode: None=disconnesso, 'snap7'=PLC, 'opcua'=OPC UA, 'autoexp'=Auto Export attivo"""
+        mode: None=disconnesso, 'snap7'=PLC, 'autoexp'=Auto Export attivo"""
         if mode == "autoexp":
             self._lbl_conn.config(text="● AUTO EXPORT ATTIVO", bg="#1a3a1a", fg=OK_CLR)
             self.title(f"WeldDetector DB Analyzer  {APP_RELEASE}  ●  AUTO EXPORT")
@@ -2257,8 +1664,6 @@ class WeldViewerApp(tk.Tk):
             self.title(f"WeldDetector DB Analyzer  {APP_RELEASE}  ●  RT MONITOR")
         elif mode == "snap7":
             self._lbl_conn.config(text="● PLC Connesso", bg="#1a2a3a", fg=PLC_CLR)
-        elif mode == "opcua":
-            self._lbl_conn.config(text="● OPC UA", bg="#2a1a3a", fg=OPCUA_CLR)
         else:
             self._lbl_conn.config(text="", bg=DARK_BG, fg=DARK_BG)
             self.title(f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7")
@@ -2544,11 +1949,7 @@ class WeldViewerApp(tk.Tk):
         self._build_plc_tab(plc_frame)
 
         # ══════════════════════════════════════════════════════
-        #  TAB 4: 🌐 OPC UA
-        # ══════════════════════════════════════════════════════
-
-        # ══════════════════════════════════════════════════════
-        #  TAB 5: 📈 STATISTICHE PARAMETRI
+        #  TAB 4: 📈 STATISTICHE PARAMETRI
         # ══════════════════════════════════════════════════════
         stat_frame = ttk.Frame(nb)
         nb.add(stat_frame, text="  📈  Statistiche  ")
@@ -6124,10 +5525,6 @@ class WeldViewerApp(tk.Tk):
 
         win.protocol("WM_DELETE_WINDOW", lambda: (win.destroy()))
 
-
-    # ══════════════════════════════════════════════════════════════
-    #  TAB OPC UA — CONFIGURAZIONE, BROWSE E LETTURA
-    # ══════════════════════════════════════════════════════════════
 
     # ══════════════════════════════════════════════════════════════
     #  SIMULATORE — sub-tab Sorgente (file .db | SQLite)

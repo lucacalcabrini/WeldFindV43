@@ -1,5 +1,4 @@
 matplotlib
 numpy
 python-snap7
-asyncua
 pyinstaller
