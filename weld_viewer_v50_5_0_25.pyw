@@ -99,6 +99,12 @@ if sys.platform == "win32":
 # ── Pulizia processi: uccide tutto il sottoalbero alla chiusura ──
 import os, signal, atexit
 
+# Cartella dell'exe (PyInstaller) o dello script (.pyw) — usata per WeldDetectoSetup.par
+if getattr(sys, 'frozen', False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
 _MAIN_PID = os.getpid()  # PID main process; worker hanno pid diverso
 
 def _kill_process_tree():
@@ -2486,8 +2492,7 @@ class WeldViewerApp(tk.Tk):
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # IMPOSTAZIONI  --  WeldDetectoSetup.par
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    _SETTINGS_FILE = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "WeldDetectoSetup.par")
+    _SETTINGS_FILE = os.path.join(APP_DIR, "WeldDetectoSetup.par")
     _SETTINGS_DEFAULTS = {
         "plc_ip":       "172.28.2.1",
         "plc_rack":     "0",
