@@ -26,19 +26,39 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Read version from source
+        id: version
+        run: |
+          $ver = (Select-String -Path "weld_viewer_v50_5_0_25.pyw" -Pattern 'APP_VERSION\s*=\s*"(.+)"').Matches.Groups[1].Value
+          echo "ver=$ver" >> $env:GITHUB_OUTPUT
+          echo "Version: $ver"
+
+      - name: Embed manual.html into .pyw
+        run: python embed_manual.py
+
       - name: Build EXE with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --name WeldDetector weld_viewer_v50_5_0_25.pyw
+          pyinstaller --onefile --windowed --name "WeldDetector_v${{ steps.version.outputs.ver }}" weld_viewer_v50_5_0_25.pyw
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WeldDetector-Windows
-          path: dist/WeldDetector.exe
+          name: WeldDetector-v${{ steps.version.outputs.ver }}-Windows
+          path: dist/WeldDetector_v${{ steps.version.outputs.ver }}.exe
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/WeldDetector.exe
-          generate_release_notes: true
+          name: "WeldDetector v${{ steps.version.outputs.ver }}"
+          files: dist/WeldDetector_v${{ steps.version.outputs.ver }}.exe
+          generate_release_notes: false
+          body: |
+            ## WeldDetector v${{ steps.version.outputs.ver }}
+
+            ### Installazione
+            Scarica `WeldDetector_v${{ steps.version.outputs.ver }}.exe` e avvialo direttamente.
+            Non richiede installazione di Python o librerie aggiuntive.
+
+            ### Note
+            Il file `WeldDetectoSetup.par` viene creato automaticamente nella stessa cartella dell'exe al primo avvio.

@@ -1,0 +1,715 @@
+﻿<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WeldFind v5.0 — Manuale Tecnico</title>
+<style>
+  :root {
+    --bg:#0d1117;--panel:#161b22;--border:#30363d;
+    --accent:#58a6ff;--ok:#3fb950;--warn:#d29922;
+    --err:#f85149;--text:#c9d1d9;--muted:#8b949e;
+    --code-bg:#1a2029;--head-bg:#21262d;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:15px;line-height:1.75}
+  .wrapper{display:flex;min-height:100vh}
+  nav{width:270px;min-width:270px;background:var(--panel);border-right:1px solid var(--border);padding:20px 0;position:sticky;top:0;height:100vh;overflow-y:auto}
+  main{flex:1;padding:40px 60px;max-width:980px}
+  .nav-logo{padding:0 20px 18px;border-bottom:1px solid var(--border);margin-bottom:10px}
+  .nav-logo h2{color:var(--accent);font-size:16px;font-family:Consolas,monospace}
+  .nav-logo span{color:var(--muted);font-size:11px}
+  nav a{display:block;padding:5px 20px;color:var(--muted);text-decoration:none;font-size:13px;border-left:2px solid transparent;transition:all .15s}
+  nav a:hover,nav a.active{color:var(--accent);border-left-color:var(--accent);background:rgba(88,166,255,.07)}
+  nav .sec{padding:12px 20px 3px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+  h1{font-size:28px;color:var(--accent);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:12px}
+  h2{font-size:20px;color:var(--accent);margin:38px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+  h3{font-size:16px;color:#e6edf3;margin:26px 0 9px}
+  h4{font-size:13px;color:var(--warn);margin:18px 0 6px;text-transform:uppercase;letter-spacing:.05em}
+  p{margin-bottom:11px}
+  code{background:var(--code-bg);padding:2px 6px;border-radius:4px;font-family:Consolas,monospace;font-size:13px;color:#e6cc87}
+  pre{background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:16px 20px;margin:12px 0;overflow-x:auto;font-family:Consolas,monospace;font-size:13px;line-height:1.6}
+  pre .kw{color:#ff7b72} pre .var{color:#79c0ff} pre .num{color:#f2cc60} pre .cmt{color:#8b949e;font-style:italic} pre .op{color:#d2a8ff} pre .str{color:#a5d6ff}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th{background:var(--head-bg);color:var(--accent);padding:10px 14px;text-align:left;border-bottom:2px solid var(--border)}
+  td{padding:9px 14px;border-bottom:1px solid var(--border);vertical-align:top}
+  tr:hover td{background:var(--head-bg)}
+  td:first-child{font-family:Consolas,monospace;color:#e6cc87;white-space:nowrap}
+  .formula{background:var(--code-bg);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:14px 18px;margin:12px 0;font-family:Consolas,monospace;font-size:14px}
+  .formula .lbl{color:var(--muted);font-size:11px;text-transform:uppercase;margin-bottom:5px;font-family:'Segoe UI',sans-serif}
+  .note{background:rgba(88,166,255,.08);border-left:3px solid var(--accent);border-radius:0 6px 6px 0;padding:11px 16px;margin:12px 0}
+  .warn{background:rgba(210,153,34,.08);border-left:3px solid var(--warn);border-radius:0 6px 6px 0;padding:11px 16px;margin:12px 0}
+  .ok{background:rgba(63,185,80,.08);border-left:3px solid var(--ok);border-radius:0 6px 6px 0;padding:11px 16px;margin:12px 0}
+  .danger{background:rgba(248,81,73,.08);border-left:3px solid var(--err);border-radius:0 6px 6px 0;padding:11px 16px;margin:12px 0}
+  .note strong{color:var(--accent);display:block;margin-bottom:3px}
+  .warn strong{color:var(--warn);display:block;margin-bottom:3px}
+  .ok strong{color:var(--ok);display:block;margin-bottom:3px}
+  .danger strong{color:var(--err);display:block;margin-bottom:3px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;margin-left:8px;vertical-align:middle}
+  .badge.new{background:rgba(63,185,80,.2);color:var(--ok)}
+  .badge.brk{background:rgba(248,81,73,.2);color:var(--err)}
+  .badge.opt{background:rgba(88,166,255,.2);color:var(--accent)}
+  .flow{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin:12px 0}
+  .fbox{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:7px 13px;font-size:13px;text-align:center}
+  .fbox.act{border-color:var(--accent);color:var(--accent)}
+  .fbox.ok{border-color:var(--ok);color:var(--ok)}
+  .fbox.rm{border-color:var(--err);color:var(--err);text-decoration:line-through;opacity:.5}
+  .arr{color:var(--muted);font-size:18px}
+  hr{border:none;border-top:1px solid var(--border);margin:34px 0}
+  .vtag{color:var(--muted);font-size:13px;margin-left:10px;font-family:Consolas,monospace}
+  ul{margin:8px 0 12px 24px;line-height:2.1}
+  li{margin-bottom:2px}
+</style>
+</head>
+<body>
+<div class="wrapper">
+<nav>
+  <div class="nav-logo">
+    <h2>&#10041; WeldFind v5.0</h2>
+    <span>Manuale Tecnico Completo</span>
+  </div>
+  <div class="sec">Introduzione</div>
+  <a href="#overview">Panoramica sistema</a>
+  <a href="#changelog">Changelog versioni</a>
+  <a href="#quickstart">Avvio rapido</a>
+  <div class="sec">Algoritmo PLC (SCL)</div>
+  <a href="#flow">Flusso esecuzione</a>
+  <a href="#reset">Reset e inizializzazione</a>
+  <a href="#filter">Filtro acquisizione</a>
+  <a href="#baseline">Baseline look-back</a>
+  <a href="#adapt">Baseline adattiva v4.6</a>
+  <a href="#flatwait">Attesa sup. piatta v4.6</a>
+  <a href="#thresholds">Calcolo soglie</a>
+  <a href="#cluster">Logica cluster</a>
+  <a href="#detection">Detection v5.0</a>
+  <a href="#postdet">Post-detection travel</a>
+  <a href="#polarity">Polarita picco v4.3</a>
+  <div class="sec">Parametri SCL</div>
+  <a href="#param-filter">Filtro</a>
+  <a href="#param-thresh">Soglie</a>
+  <a href="#param-cluster">Cluster</a>
+  <a href="#param-v46">v4.6 opzionali</a>
+  <a href="#param-v50">v5.0: DetectionStartDeg</a>
+  <div class="sec">Software Python v5.0</div>
+  <a href="#tabs">Struttura interfaccia</a>
+  <a href="#settings">Impostazioni (.par)</a>
+  <a href="#sim">Simulatore</a>
+  <a href="#stats">Statistiche / Grid search</a>
+  <a href="#sqlite">SQLite archivio</a>
+  <a href="#plcreader">PLC Reader</a>
+  <div class="sec">Diagnostica</div>
+  <a href="#errors">Codici errore</a>
+  <a href="#tuning">Guida tuning</a>
+  <a href="#float32">Note float32</a>
+  <a href="#false-pos">Falsi positivi eccentrico</a>
+</nav>
+
+<main>
+
+<section id="overview">
+<h1>WeldFind v5.0 &#8212; Manuale Tecnico <span class="vtag">SCL v5.0 &middot; Python v5.0</span></h1>
+
+<p>WeldFind e' un sistema di rilevamento in tempo reale della posizione di saldatura (o buco) su cilindri rotanti o parti in movimento lineare. E' composto da due componenti principali:</p>
+
+<table>
+<tr><th>Componente</th><th>Tecnologia</th><th>Funzione</th></tr>
+<tr><td>Fb954_WeldFindV50</td><td>SCL &ndash; S7-1500</td><td>Algoritmo real-time: acquisisce campioni laser+encoder, rileva la saldatura durante il movimento</td></tr>
+<tr><td>weld_viewer_v50</td><td>Python / Tkinter</td><td>Analisi offline, simulazione, grid search parametri, archivio SQLite, monitor real-time PLC</td></tr>
+</table>
+
+<div class="note">
+<strong>&#128204; Principio di funzionamento</strong>
+Il sensore laser misura la distanza dalla superficie del pezzo mentre ruota. La saldatura (o buco) produce un'anomalia nella distanza. L'algoritmo rileva questa anomalia confrontando ogni campione con una <strong>baseline locale adattiva</strong> calcolata su una finestra angolare scorrevole.
+</div>
+</section>
+
+<hr>
+
+<section id="changelog">
+<h2>Changelog versioni</h2>
+
+<h3>v5.0 <span class="badge new">corrente</span></h3>
+<table>
+<tr><th>Modifica</th><th>Descrizione</th></tr>
+<tr><td>I_DetectionStartDeg</td><td>Nuovo parametro VAR_INPUT. Separa la dead zone di detection dalla finestra di look-back baseline. Con 0.0 (default) il comportamento e' identico a v4.9. Impostare a 15-30 gradi su superfici eccentriche per evitare false detection precoci senza ridurre la finestra baseline.</td></tr>
+<tr><td>rDetStartDeg</td><td>Nuova VAR calcolata al reset: vale I_DetectionStartDeg se > 0, altrimenti I_BaselineWindowDeg. Visibile nel DB istanza per debug online in TIA Portal.</td></tr>
+<tr><td>Solo SQLite</td><td>Il software Python rimuove ogni riferimento a file .db TIA Portal come sorgente dati. Tutta l'operativita' passa per il database SQLite.</td></tr>
+<tr><td>Pulsante Impostazioni</td><td>Popup dedicato con parametri PLC (IP, DB, Rack, Slot), percorso SCL e percorso SQLite. Salvati immediatamente in C:\WeldDetectoSetup.par (JSON).</td></tr>
+<tr><td>Pulsante Utilita'</td><td>SQLite Import e SQLite Query aperte come finestre Toplevel separate, non piu' tab fisse nell'interfaccia principale.</td></tr>
+<tr><td>Confronto Multi-DB</td><td>Entrambi i profili selezionati da dialog SQLite con filtri persistenti tra aperture.</td></tr>
+<tr><td>angle_exceeded timing</td><td>FIX: angle_exceeded valutato con total_travel del ciclo precedente, allineato esattamente al blocco A dello SCL.</td></tr>
+</table>
+
+<h3>v4.9</h3>
+<p>Prima introduzione di <code>I_DetectionStartDeg</code> come parametro separato dalla window.</p>
+
+<h3>v4.7</h3>
+<table>
+<tr><th>Modifica</th><th>Impatto</th></tr>
+<tr><td>Baseline adattiva &ndash; tracking continuo</td><td>Range aggiornato ogni ciclo (iWinN&ge;3). Piu' robusto su superfici con drift lento.</td></tr>
+<tr><td>Eliminazione scan retroattivo (F-bis)</td><td>Riduzione falsi positivi su superfici con drift. La baseline tardiva non confronta piu' i campioni iniziali.</td></tr>
+<tr><td>Dead zone &rarr; bAngleExceeded</td><td>Guard detection usa flag persistente invece di confronto float.</td></tr>
+</table>
+
+<h3>v4.6</h3>
+<p><code>I_AdaptBaselineEnable</code>, <code>I_FlatWaitEnable</code> e relativi parametri.</p>
+
+<h3>v4.5</h3>
+<p><code>bWeldDetectedInternal</code>: Trovata alzata dopo 2 gradi post-detection.</p>
+
+<h3>v4.3</h3>
+<p><code>I_PeakPolarity</code> (0/1/2), <code>O_DetectedPolarity</code>, supporto CW/CCW.</p>
+</section>
+
+<hr>
+
+<section id="quickstart">
+<h2>Avvio rapido</h2>
+
+<h3>Prima configurazione</h3>
+<ol style="margin:8px 0 12px 24px;line-height:2.4">
+<li>Avviare <code>weld_viewer_v50.pyw</code> &rarr; viene creato automaticamente <code>C:\WeldDetectoSetup.par</code> con i valori di default.</li>
+<li>Cliccare <strong>Impostazioni</strong> e inserire: IP PLC, DB number, percorso SCL, percorso database SQLite. Premere <strong>Salva</strong>.</li>
+<li>Nel tab <strong>PLC Reader</strong>: premere <em>Connetti</em> per verificare la comunicazione. Se OK, premere <em>Avvia monitor</em> per il polling real-time.</li>
+<li>Per analizzare un'acquisizione: premere <strong>Da SQLite</strong>, selezionare la riga desiderata, caricarla in Analisi.</li>
+</ol>
+
+<h3>Configurazione PLC tipica (DB28160, anello)</h3>
+<div class="formula">
+<div class="lbl">Parametri consigliati</div>
+<span class="var">I_BaselineWindowDeg</span>    := <span class="num">2.8</span>   <span class="cmt">// finestra look-back 2.8 gradi</span>
+<span class="var">I_SigmaFactor</span>          := <span class="num">2.8</span>   <span class="cmt">// soglia 2.8 sigma</span>
+<span class="var">I_MinAbsDeviation</span>      := <span class="num">0.5</span>   <span class="cmt">// scarto minimo 0.5mm</span>
+<span class="var">I_MinConsecutive</span>       := <span class="num">5</span>     <span class="cmt">// 5 campioni minimi</span>
+<span class="var">I_DetectionStartDeg</span>    := <span class="num">15.0</span>  <span class="cmt">// dead zone 15 gradi (eccentrico)</span>
+<span class="var">I_PeakPolarity</span>         := <span class="num">0</span>     <span class="cmt">// saldatura positiva</span>
+</div>
+</section>
+
+<hr>
+
+<section id="flow">
+<h2>Flusso di esecuzione per ciclo PLC</h2>
+
+<div class="flow">
+  <div class="fbox">I_LaserValue<br>I_CurrentAngle</div>
+  <div class="arr">&rarr;</div>
+  <div class="fbox">Aggiorna<br>ActualValue<br>ValidRange</div>
+  <div class="arr">&rarr;</div>
+  <div class="fbox act">Edge reset<br>(ClearReq&uarr;<br>Enable&uarr;)</div>
+  <div class="arr">&rarr;</div>
+  <div class="fbox act">A) Guard<br>bAngleExceeded<br>(rDetStartDeg)</div>
+  <div class="arr">&rarr;</div>
+  <div class="fbox">B) Filtro<br>&Delta;Ang + &Delta;Las</div>
+  <div class="arr">&rarr;</div>
+  <div class="fbox act">C) Salva<br>buffer</div>
+</div>
+<div class="flow" style="margin-top:-6px">
+  <div class="fbox">C-bis) FlatWait<br>iFlatConsecCount</div>
+  <div class="arr">&rarr;</div>
+  <div class="fbox">A-bis) Post-det<br>travel +2&deg;</div>
+  <div class="arr">&rarr;</div>
+  <div class="fbox act">D) Look-back<br>FOR j=0..cur-1</div>
+  <div class="arr">&rarr;</div>
+  <div class="fbox">E) Cluster<br>online</div>
+  <div class="arr">&rarr;</div>
+  <div class="fbox ok">F) Detection<br>(bAngleExceeded)</div>
+</div>
+
+<div class="warn">
+<strong>&#9888; Single-thread PLC</strong>
+Il FOR interno del look-back scansiona al massimo <code>iSamplesAcquired - 1</code> campioni (max 2000). Nessun WHILE loop &mdash; solo FOR con limite superiore fisso per sicurezza watchdog.
+</div>
+</section>
+
+<hr>
+
+<section id="reset">
+<h2>Reset e inizializzazione</h2>
+
+<div class="formula">
+<div class="lbl">Condizione reset (SCL)</div>
+<span class="kw">IF</span> (ClearReq <span class="kw">AND NOT</span> bReset_Prev) <span class="op">OR</span> (EnableRicerca <span class="kw">AND NOT</span> bStart_Prev) <span class="kw">THEN</span>
+  <span class="cmt">// Fronte ClearReq &rarr; iState := 0 (Idle)</span>
+  <span class="cmt">// Fronte EnableRicerca &rarr; iState := 1 (Online)</span>
+  <span class="cmt">// *** v5.0 *** calcola rDetStartDeg</span>
+  <span class="kw">IF</span> I_DetectionStartDeg > <span class="num">0.0</span> <span class="kw">THEN</span>
+    rDetStartDeg := I_DetectionStartDeg
+  <span class="kw">ELSE</span>
+    rDetStartDeg := I_BaselineWindowDeg   <span class="cmt">// retrocompatibile</span>
+  <span class="kw">END_IF</span>
+<span class="kw">END_IF</span>
+</div>
+</section>
+
+<hr>
+
+<section id="filter">
+<h2>Filtro acquisizione</h2>
+
+<div class="formula">
+<div class="lbl">Condizione di accettazione campione (blocco C)</div>
+rAngDiff &ge; I_MinAngleDelta  <span class="kw">AND</span>
+rLaserDiff &ge; I_MinLaserDelta  <span class="kw">AND</span>
+ValidRangeValue  <span class="kw">AND</span>
+<span class="kw">NOT</span> I_AxisTandSteel
+</div>
+
+<h3 id="param-filter">Parametri filtro</h3>
+<table>
+<tr><th>Parametro SCL</th><th>Default</th><th>Descrizione</th></tr>
+<tr><td>I_MinAngleDelta</td><td>0.5&deg;</td><td>Variazione angolare minima tra campioni accettati. Per corsa lineare breve (~30mm): usare 0.001&deg;.</td></tr>
+<tr><td>I_MinLaserDelta</td><td>0.1 mm</td><td>Variazione laser minima. Per superfici lisce: ridurre a 0.001.</td></tr>
+<tr><td>I_MinLaserValidValue</td><td>0.0 mm</td><td>Limite inferiore range valido.</td></tr>
+<tr><td>I_MaxLaserValidValue</td><td>&mdash;</td><td>Limite superiore range valido.</td></tr>
+<tr><td>I_AxisTandSteel</td><td>FALSE</td><td>TRUE = asse fermo &rarr; tutti i campioni rifiutati.</td></tr>
+</table>
+</section>
+
+<hr>
+
+<section id="baseline">
+<h2>Baseline look-back angolare</h2>
+
+<div class="formula">
+<div class="lbl">FOR loop SCL &ndash; blocco D</div>
+<span class="kw">FOR</span> j := 0 <span class="kw">TO</span> iSamplesAcquired - 2 <span class="kw">DO</span>
+  rAngDiff := ABS(arAngles[iCurIdx] - arAngles[j])
+  <span class="kw">IF</span> rAngDiff > <span class="num">180.0</span> <span class="kw">THEN</span> rAngDiff := <span class="num">360.0</span> - rAngDiff <span class="kw">END_IF</span>
+  <span class="kw">IF</span> rAngDiff >= <span class="num">1.0</span> <span class="kw">AND</span> rAngDiff <= I_BaselineWindowDeg <span class="kw">THEN</span>
+    rWinSum   += arSamples[j]
+    rWinSumSq += arSamples[j] * arSamples[j]
+    iWinN     += 1
+  <span class="kw">END_IF</span>
+<span class="kw">END_FOR</span>
+</div>
+
+<div class="formula">
+<div class="lbl">Calcolo mean e sigma (float32 REAL PLC)</div>
+rM := rWinSum / INT_TO_REAL(iWinN)
+rV := rWinSumSq / INT_TO_REAL(iWinN) - rM * rM
+<span class="kw">IF</span> rV &lt; 0 <span class="kw">THEN</span> rV := 0 <span class="kw">END_IF</span>
+rS := SQRT(rV)
+</div>
+
+<div class="warn">
+<strong>&#9888; Finestra minima</strong>
+Se <code>iWinN &lt; 3</code>, il PLC propaga i valori del campione precedente: <code>rM := arMean[iCurIdx-1]</code>. Accade tipicamente nei primissimi campioni dove non ci sono ancora abbastanza punti nella finestra.
+</div>
+</section>
+
+<hr>
+
+<section id="adapt">
+<h2>Baseline adattiva <span class="badge new">v4.6</span></h2>
+
+<p>Opzionale (<code>I_AdaptBaselineEnable := FALSE</code> di default). One-shot al primo campione nel range fisico valido.</p>
+
+<h3 id="param-v46">Parametri v4.6 opzionali</h3>
+<table>
+<tr><th>Parametro SCL</th><th>Default</th><th>Descrizione</th></tr>
+<tr><td>I_AdaptBaselineEnable</td><td>FALSE</td><td>Abilita il filtro range adattivo nel look-back.</td></tr>
+<tr><td>I_AdaptBaselineOffset</td><td>3.0 mm</td><td>Semibanda del range adattivo. Deve essere &gt; variazione normale superficie e &lt; profondita' buco.</td></tr>
+<tr><td>I_FlatWaitEnable</td><td>FALSE</td><td>Abilita attesa superficie piatta prima di detection.</td></tr>
+<tr><td>I_FlatWaitSamples</td><td>5</td><td>Campioni stabili consecutivi richiesti.</td></tr>
+<tr><td>I_FlatWaitToll</td><td>0.5 mm</td><td>Variazione max inter-campione per considerare "piano".</td></tr>
+</table>
+</section>
+
+<hr>
+
+<section id="flatwait">
+<h2>Attesa superficie piatta <span class="badge new">v4.6</span></h2>
+
+<div class="formula">
+<div class="lbl">Blocco C-bis (per ogni campione accettato)</div>
+<span class="kw">IF</span> I_FlatWaitEnable <span class="kw">AND</span> iCurIdx > 0 <span class="kw">THEN</span>
+  <span class="kw">IF</span> ABS(arSamples[iCurIdx] - arSamples[iCurIdx-1]) &lt; I_FlatWaitToll <span class="kw">THEN</span>
+    iFlatConsecCount += 1
+  <span class="kw">ELSE</span>
+    iFlatConsecCount := 0
+  <span class="kw">END_IF</span>
+  bFlatSurfaceFound := iFlatConsecCount >= I_FlatWaitSamples
+<span class="kw">END_IF</span>
+</div>
+</section>
+
+<hr>
+
+<section id="thresholds">
+<h2>Calcolo soglie adattive</h2>
+
+<div class="formula">
+<div class="lbl">Soglie POSITIVE (laser &gt; baseline)</div>
+ThHi  = rM + I_SigmaFactor &times; rS + I_MinAbsDeviation        &rarr; soglia apertura cluster
+ThLo  = rM + (I_SigmaFactor - I_HysteresisSigmas) &times; rS + I_MinAbsDeviation &times; 0.5  &rarr; soglia chiusura
+</div>
+<div class="formula">
+<div class="lbl">Soglie NEGATIVE (laser &lt; baseline)</div>
+ThHiNeg = rM - I_SigmaFactor &times; rS - I_MinAbsDeviation        &rarr; soglia apertura
+ThLoNeg = rM - (I_SigmaFactor - I_HysteresisSigmas) &times; rS - I_MinAbsDeviation &times; 0.5
+</div>
+
+<h3 id="param-thresh">Parametri soglie</h3>
+<table>
+<tr><th>Parametro SCL</th><th>Default</th><th>Effetto</th></tr>
+<tr><td>I_SigmaFactor</td><td>3.0</td><td>Moltiplicatore sigma. Range tipico: 1.5 (sensibile) &ndash; 4.0 (conservativo).</td></tr>
+<tr><td>I_MinAbsDeviation</td><td>1.5 mm</td><td>Scarto minimo assoluto. Circa 1/3 dell'altezza attesa della saldatura.</td></tr>
+<tr><td>I_HysteresisSigmas</td><td>0.5</td><td>Abbassa la soglia di chiusura cluster. Evita chiusure premature su segnali con leggera ondulazione.</td></tr>
+</table>
+</section>
+
+<hr>
+
+<section id="cluster">
+<h2>Logica cluster online</h2>
+
+<div class="formula">
+<div class="lbl">Blocco E &ndash; apertura</div>
+<span class="kw">IF NOT</span> bInCluster <span class="kw">THEN</span>
+  <span class="kw">IF</span> (NOT I_FlatWaitEnable OR bFlatSurfaceFound) <span class="kw">THEN</span>
+    <span class="kw">IF</span> bCheckPositive <span class="kw">AND</span> laser >= ThHi <span class="kw">THEN</span>
+      bInCluster := <span class="kw">TRUE</span>; polarity := <span class="num">0</span>; count := <span class="num">1</span>
+    <span class="kw">ELSIF</span> bCheckNegative <span class="kw">AND</span> laser &lt;= ThHiNeg <span class="kw">THEN</span>
+      bInCluster := <span class="kw">TRUE</span>; polarity := <span class="num">1</span>; count := <span class="num">1</span>
+    <span class="kw">END_IF</span>
+  <span class="kw">END_IF</span>
+</div>
+
+<h3 id="param-cluster">Parametri cluster</h3>
+<table>
+<tr><th>Parametro SCL</th><th>Default</th><th>Effetto</th></tr>
+<tr><td>I_MinConsecutive</td><td>3</td><td>Campioni minimi per cluster valido. Aumentare per ridurre falsi positivi su picchi isolati.</td></tr>
+<tr><td>I_MaxConsecutive</td><td>60</td><td>Campioni massimi. Cluster piu' lunghi vengono ignorati (probabilmente non e' una saldatura).</td></tr>
+</table>
+</section>
+
+<hr>
+
+<section id="detection">
+<h2>Detection &ndash; blocco F <span class="badge new">v5.0</span></h2>
+
+<div class="formula">
+<div class="lbl">Condizione detection v5.0 (SCL &ndash; blocco F)</div>
+<span class="kw">IF</span> bAngleExceeded <span class="kw">AND</span>   <span class="cmt">// *** v5.0: usa rDetStartDeg ***</span>
+   (NOT I_FlatWaitEnable <span class="op">OR</span> bFlatSurfaceFound) <span class="kw">THEN</span>
+  <span class="kw">IF</span> bInCluster <span class="kw">AND</span> iClusterCount >= I_MinConsecutive <span class="kw">AND NOT</span> bWeldDetectedInternal <span class="kw">THEN</span>
+    bWeldDetectedInternal := <span class="kw">TRUE</span>
+    iDetectedAtSample := iCurIdx
+    rDetectedAtAngle  := arAngles[iCurIdx]
+    ...
+  <span class="kw">END_IF</span>
+<span class="kw">END_IF</span>
+</div>
+
+<p><code>bAngleExceeded</code> diventa TRUE quando <code>rTotalTravel &gt; rDetStartDeg</code>. Con <code>I_DetectionStartDeg = 0.0</code>, <code>rDetStartDeg = I_BaselineWindowDeg</code> (comportamento identico a v4.9).</p>
+
+<h3 id="param-v50">Parametro v5.0: I_DetectionStartDeg</h3>
+<table>
+<tr><th>Valore</th><th>Comportamento</th></tr>
+<tr><td>0.0 (default)</td><td>Dead zone = I_BaselineWindowDeg (retrocompatibile con v4.9)</td></tr>
+<tr><td>15.0</td><td>Detection abilitata solo dopo 15&deg; di rotazione, indipendentemente dalla window baseline</td></tr>
+<tr><td>&gt; 0.0 qualsiasi</td><td>Separazione esplicita tra "quanti gradi aspettare prima di detection" e "dimensione finestra baseline"</td></tr>
+</table>
+
+<div class="ok">
+<strong>&#10003; Quando usarlo</strong>
+Superfici con eccentricita' meccanica che produce un drift sistematico nei primi gradi. Con window piccola (2&deg;) e deriva &gt;0.15mm/&deg;, la sigma e' quasi zero e ThHi = mean + solo mabs. Impostando I_DetectionStartDeg = 15&deg; si lascia alla baseline il tempo di stabilizzarsi prima di abilitare la detection.
+</div>
+</section>
+
+<hr>
+
+<section id="postdet">
+<h2>Post-detection travel <span class="badge new">v4.5</span></h2>
+
+<p>Con <code>I_StopOnWeld=TRUE</code>, il FB non va in Done immediatamente al rilevamento. Continua ad acquisire campioni per <code>rPostDetTravelDegC = 2.0&deg;</code> (costante interna) dopo la detection, poi va in Done. Durante questi 2&deg; il cluster e <code>OutPosizioneAsse</code> continuano ad aggiornarsi.</p>
+</section>
+
+<hr>
+
+<section id="polarity">
+<h2>Polarita' picco <span class="badge new">v4.3</span></h2>
+<table>
+<tr><th>I_PeakPolarity</th><th>Effetto</th><th>Quando usare</th></tr>
+<tr><td>0 (default)</td><td>Solo picchi POSITIVI (laser &gt; baseline)</td><td>Saldatura crea rilievo &rarr; laser misura distanza minore (valore piu' alto)</td></tr>
+<tr><td>1</td><td>Solo picchi NEGATIVI (laser &lt; baseline)</td><td>Buchi o depressioni</td></tr>
+<tr><td>2</td><td>ENTRAMBI &ndash; vince quello con |deviazione| maggiore</td><td>Tipo di saldatura non noto a priori</td></tr>
+</table>
+</section>
+
+<hr>
+
+<section id="tabs">
+<h2>Struttura interfaccia Python v5.0</h2>
+
+<h3>Barra superiore</h3>
+<table>
+<tr><th>Elemento</th><th>Funzione</th></tr>
+<tr><td>Da SQLite</td><td>Apre dialog per selezionare una riga dal database SQLite e caricarla nell'analisi</td></tr>
+<tr><td>Utilita'</td><td>Popup con accesso a SQLite Import e SQLite Query (finestre separate)</td></tr>
+<tr><td>Impostazioni</td><td>Popup impostazioni: IP PLC, DB, Rack, Slot, percorso SCL, percorso SQLite. Salvate in C:\WeldDetectoSetup.par</td></tr>
+<tr><td>Manuale</td><td>Apre questo manuale nel browser predefinito</td></tr>
+<tr><td>Pausa Viewer</td><td>Congela il viewer durante il monitor real-time PLC</td></tr>
+</table>
+
+<h3>Tab principali</h3>
+<table>
+<tr><th>Tab</th><th>Funzione principale</th></tr>
+<tr><td>&#128202; Analisi</td><td>Visualizzazione segnale+soglie, indicatori sup.piatta v4.7, report diagnostico, confronto multi-DB da SQLite. Il simulatore parte automaticamente al caricamento.</td></tr>
+<tr><td>&#9654; Simulatore PLC</td><td>Simulazione parametrica + grafici dettagliati + analisi discordanze. Pannello "v4.9: Eccentrico" con campo DetStart [&deg;].</td></tr>
+<tr><td>&#128268; PLC Reader</td><td>Lettura diretta DB PLC via Snap7, monitor real-time, Auto Export multi-DB con selezione real-time.</td></tr>
+<tr><td>&#128200; Statistiche</td><td>Grid search parallelo su archivio SQLite, ottimizzazione parametri, analisi discordanze batch.</td></tr>
+</table>
+</section>
+
+<hr>
+
+<section id="settings">
+<h2>Impostazioni &ndash; WeldDetectoSetup.par <span class="badge new">v5.0</span></h2>
+
+<p>All'avvio il software cerca il file <code>C:\WeldDetectoSetup.par</code>. Se non esiste, viene creato con i valori di default. Ogni modifica nel popup Impostazioni viene salvata immediatamente.</p>
+
+<h3>Struttura del file (JSON)</h3>
+<pre>
+{
+  "<span class="var">plc_ip</span>":       "<span class="str">172.28.2.1</span>",
+  "<span class="var">plc_db</span>":       "<span class="str">28160</span>",
+  "<span class="var">plc_rack</span>":     "<span class="str">0</span>",
+  "<span class="var">plc_slot</span>":     "<span class="str">1</span>",
+  "<span class="var">scl_path</span>":     "<span class="str">C:\Progetti\Fb954_WeldFindV50.scl</span>",
+  "<span class="var">sqlite_path</span>":  "<span class="str">C:\WeldExport\weld_archive.sqlite</span>",
+  "<span class="var">autoexp_interval_ms</span>": "<span class="num">100</span>",
+  "<span class="var">sim_window_default</span>":  "<span class="num">2.8</span>",
+  "<span class="var">sim_sigma_default</span>":   "<span class="num">2.8</span>",
+  "<span class="var">sim_mabs_default</span>":    "<span class="num">0.5</span>"
+}
+</pre>
+
+<div class="note">
+<strong>&#128204; Propagazione automatica</strong>
+Dopo il salvataggio delle impostazioni, i valori PLC vengono propagati automaticamente al tab PLC Reader (IP, DB, Rack, Slot) e il percorso SQLite viene propagato al simulatore e alle statistiche.
+</div>
+</section>
+
+<hr>
+
+<section id="sim">
+<h2>Tab Simulatore &ndash; dettaglio</h2>
+
+<h3>Colonne parametri</h3>
+<table>
+<tr><th>Colonna</th><th>Sfondo</th><th>Contenuto</th></tr>
+<tr><td>DB</td><td>#0d1117 (nero scuro)</td><td>Valore originale caricato dal DB SQLite (sola lettura)</td></tr>
+<tr><td>Stats</td><td>#0d1f38 (blu navy)</td><td>Valore ottimizzato dal grid search &ndash; appare solo dopo "Applica al Simulatore"</td></tr>
+<tr><td>Corrente</td><td>ENTRY_BG</td><td>Valore attualmente usato dalla simulazione (editabile)</td></tr>
+</table>
+
+<h3>Pannello v4.9: Eccentrico</h3>
+<table>
+<tr><th>Campo</th><th>Funzione</th></tr>
+<tr><td>DetStart [&deg;]</td><td>I_DetectionStartDeg per la simulazione. 0 = usa window (retrocompatibile). Es. 15.0 per superfici eccentriche.</td></tr>
+</table>
+
+<h3>Grafici disponibili</h3>
+<table>
+<tr><th>Grafico</th><th>Contenuto</th></tr>
+<tr><td>Segnale &amp; Detection</td><td>Laser filtrato + soglie ThHi/ThLo + marker detection + indicatore sup.piatta</td></tr>
+<tr><td>Effetto Filtro</td><td>Confronto grezzo vs filtrato + densita' campioni per grado</td></tr>
+<tr><td>Vista Polare</td><td>Segnale su grafico polare &ndash; utile per vedere la saldatura rispetto alla rotazione</td></tr>
+<tr><td>Soglie per campione</td><td>Evoluzione di Mean e Sigma + ThreshHigh/Low campione per campione</td></tr>
+<tr><td>Timeline Detection</td><td>Dettaglio campione-per-campione fino al rilevamento</td></tr>
+<tr><td>DB vs Sim</td><td>Confronto Mean PLC vs Sim, ThreshHigh PLC vs Sim, residuo</td></tr>
+<tr><td>Copertura Finestra</td><td>win_n (campioni nella finestra look-back) per campione</td></tr>
+<tr><td>Discordanze</td><td>Tabella discordanze PLC vs Sim dopo grid search</td></tr>
+</table>
+</section>
+
+<hr>
+
+<section id="stats">
+<h2>Tab Statistiche &ndash; Grid Search</h2>
+
+<p>Il grid search esegue la simulazione su N acquisizioni SQLite &times; M combinazioni di parametri in parallelo usando <code>ProcessPoolExecutor</code>.</p>
+
+<h3>Parametri in sweep (con range Da/A/Passi)</h3>
+<ul>
+<li>sigma_factor, min_abs_dev, hyst_sigmas</li>
+<li>window_deg, min_consecutive</li>
+<li>flat_wait_enable, flat_wait_samples, flat_wait_toll</li>
+</ul>
+
+<h3>Parametri fissi (valore singolo)</h3>
+<ul>
+<li>max_consecutive, stop_on_weld, peak_polarity</li>
+<li><strong>DetStart&deg;</strong> (v5.0): I_DetectionStartDeg, default 0.0</li>
+</ul>
+
+<div class="warn">
+<strong>&#9888; FlatWait nel grid search</strong>
+Se flat_wait_enable e' fisso=0, i parametri flat_wait_samples e flat_wait_toll vengono automaticamente esclusi dal grid (nessuna combinazione inutile generata).
+</div>
+
+<h3>Sorgente dati</h3>
+<p>Le statistiche usano sempre il database SQLite. Selezionare il file, applicare i filtri (DB number, data da/a, saldatura trovata/non trovata) e premere <em>Carica da SQLite</em>. La lista acquisizioni viene popolata e si puo' selezionare il sottoinsieme su cui eseguire il grid search.</p>
+</section>
+
+<hr>
+
+<section id="sqlite">
+<h2>Schema SQLite</h2>
+<p>Tabella <code>acquisitions</code> &ndash; 21 colonne:</p>
+<pre>
+<span class="kw">id</span>            INTEGER PRIMARY KEY AUTOINCREMENT
+<span class="var">timestamp</span>     TEXT     "2026-03-26 14:15:32"
+<span class="var">db_number</span>     INTEGER  numero DB PLC
+<span class="var">filename</span>      TEXT     nome file .db originale
+<span class="var">weld_found</span>    INTEGER  0/1
+<span class="var">det_angle</span>     REAL     rDetectedAtAngle [&deg;]
+<span class="var">det_sample</span>    INTEGER  iDetectedAtSample
+<span class="var">peak_value</span>    REAL     rPeakValue [mm]
+<span class="var">peak_dev</span>      REAL     rPeakDeviation [mm]
+<span class="var">peak_sigmas</span>   REAL     rPeakSigmas (SNR)
+<span class="var">n_samples</span>     INTEGER  iSamplesAcquired
+<span class="var">sigma_factor</span>  REAL     I_SigmaFactor
+<span class="var">min_abs_dev</span>   REAL     I_MinAbsDeviation
+<span class="var">hyst_sigmas</span>   REAL     I_HysteresisSigmas
+<span class="var">window_deg</span>    REAL     I_BaselineWindowDeg
+<span class="var">min_consec</span>    INTEGER  I_MinConsecutive
+<span class="var">max_consec</span>    INTEGER  I_MaxConsecutive
+<span class="var">polarity</span>      INTEGER  I_PeakPolarity
+<span class="var">raw_samples</span>   BLOB     arSamples[] float32 little-endian
+<span class="var">raw_angles</span>    BLOB     arAngles[]  float32 little-endian
+<span class="var">scalars_json</span>  TEXT     JSON con tutti gli scalari del DB
+</pre>
+</section>
+
+<hr>
+
+<section id="plcreader">
+<h2>PLC Reader</h2>
+
+<h3>Connessione</h3>
+<p>Usa <code>python-snap7</code> con accesso diretto al DB istanza (S7_Optimized_Access=FALSE, PUT/GET abilitato). I parametri IP, DB, Rack, Slot vengono letti dalle Impostazioni al primo avvio.</p>
+
+<h3>Modalita' disponibili</h3>
+<table>
+<tr><th>Modalita'</th><th>Descrizione</th></tr>
+<tr><td>Leggi una volta</td><td>Lettura singola del DB PLC e analisi immediata</td></tr>
+<tr><td>Monitor real-time</td><td>Polling continuo a intervallo configurabile (default 100ms). Aggiorna il pannello risultati in tempo reale.</td></tr>
+<tr><td>Auto Export</td><td>Monitora fino a 10 DB PLC simultaneamente. Alla fine di ogni acquisizione (fronte discendente di bStart) esporta automaticamente nel database SQLite.</td></tr>
+</table>
+
+<h3>Trigger Auto Export</h3>
+<table>
+<tr><th>Trigger</th><th>Condizione</th><th>Uso tipico</th></tr>
+<tr><td>bStart_Prev &darr;</td><td>Fronte di discesa</td><td>Fine acquisizione (bStartAcquisition torna FALSE)</td></tr>
+<tr><td>O_Done &uarr;</td><td>Fronte di salita</td><td>Impulso Done del FB</td></tr>
+<tr><td>iState &rarr; Done</td><td>iState == 2</td><td>Stato macchina = 2</td></tr>
+</table>
+</section>
+
+<hr>
+
+<section id="errors">
+<h2>Codici errore PLC</h2>
+<table>
+<tr><th>ErrorCode</th><th>Causa</th><th>Rimedio</th></tr>
+<tr><td>0</td><td>OK &ndash; nessun errore</td><td>&mdash;</td></tr>
+<tr><td>1</td><td>Buffer overflow: piu' di 2000 campioni</td><td>Aumentare I_MinAngleDelta o I_MinLaserDelta</td></tr>
+<tr><td>2</td><td>Nessun campione a fine giro</td><td>Verificare filtri &ndash; I_MinAngleDelta o I_MinLaserDelta troppo restrittivi</td></tr>
+<tr><td>3</td><td>I_MinConsecutive &gt; I_MaxConsecutive</td><td>Correggere i parametri</td></tr>
+<tr><td>4</td><td>I_PeakPolarity non e' 0, 1 o 2</td><td>Impostare un valore valido</td></tr>
+</table>
+</section>
+
+<hr>
+
+<section id="tuning">
+<h2>Guida al tuning parametri</h2>
+
+<h3>Per corsa rotante 360&deg;</h3>
+<table>
+<tr><th>Parametro</th><th>Valore consigliato</th><th>Note</th></tr>
+<tr><td>I_MinAngleDelta</td><td>0.3&deg; &ndash; 0.5&deg;</td><td>~1 campione ogni 0.5&deg; &rarr; ~720 campioni/giro</td></tr>
+<tr><td>I_MinLaserDelta</td><td>0.05 &ndash; 0.1 mm</td><td>Ridurre su superfici lisce</td></tr>
+<tr><td>I_BaselineWindowDeg</td><td>2&deg; &ndash; 5&deg;</td><td>Circa 10-20 campioni nella finestra</td></tr>
+<tr><td>I_SigmaFactor</td><td>2.5 &ndash; 3.5</td><td>3.0 e' il punto di partenza standard</td></tr>
+<tr><td>I_MinAbsDeviation</td><td>0.3 &ndash; 2.0 mm</td><td>~1/3 altezza saldatura attesa</td></tr>
+<tr><td>I_MinConsecutive</td><td>3 &ndash; 6</td><td>Saldature strette: 3. Larghe: 5-8</td></tr>
+<tr><td>I_DetectionStartDeg</td><td>0.0 &ndash; 30.0&deg;</td><td>0=retrocompat. Aumentare se eccentrico</td></tr>
+</table>
+
+<h3>Interpretare rPeakSigmas (SNR)</h3>
+<table>
+<tr><th>Valore</th><th>Qualita'</th></tr>
+<tr><td>&lt; 3&sigma;</td><td>&#9888; Debole &ndash; rivedere parametri o condizioni acquisizione</td></tr>
+<tr><td>3&sigma; &ndash; 5&sigma;</td><td>&#10003; Accettabile</td></tr>
+<tr><td>&gt; 5&sigma;</td><td>&#10003;&#10003; Robusto</td></tr>
+<tr><td>&gt; 10&sigma;</td><td>&#10003;&#10003;&#10003; Eccellente</td></tr>
+</table>
+</section>
+
+<hr>
+
+<section id="float32">
+<h2>Note sull'aritmetica float32</h2>
+
+<p>Il PLC S7-1500 usa esclusivamente REAL (IEEE 754 single precision, 32 bit). La simulazione Python replica questo comportamento con <code>use_float32=True</code>.</p>
+
+<div class="danger">
+<strong>&#128684; Perche' float64 Python da' risultati diversi</strong>
+Con valori laser ~400mm, la somma di 20-30 valori float32 accumulati sequenzialmente differisce dalla somma numpy float64 a causa degli errori di arrotondamento. Questa differenza puo' spostare la soglia di pochi centesimi di mm &ndash; sufficiente per perdere o acquisire 1 campione al bordo del cluster.
+</div>
+
+<div class="ok">
+<strong>&#10003; Soluzione implementata</strong>
+Il worker del grid search usa direttamente le soglie <code>arThreshHigh/Low</code> salvate dal PLC quando disponibili. Elimina completamente il problema di ricalcolo float32 e garantisce che il worker veda esattamente le stesse soglie del PLC reale.
+</div>
+</section>
+
+<hr>
+
+<section id="false-pos">
+<h2>Falsi positivi su superfici eccentriche <span class="badge new">v5.0</span></h2>
+
+<h3>Causa radice (DB28160 anello eccentrico)</h3>
+<p>Il cilindro ha un drift meccanico di 7.7mm su 111&deg; (eccentricita' anello). Con window=2&deg; e sigma quasi zero (float32 satura con pochi campioni), ThHi = mean + solo 0.5mm. Il drift di 0.22mm/&deg; supera la soglia dopo pochi gradi dalla dead zone.</p>
+
+<div class="formula">
+<div class="lbl">Analisi: ThHi al momento di bAngleExceeded (window=2.8&deg;, drift=0.22mm/&deg;)</div>
+mean  &asymp; s0 + drift &times; W/2  = s0 + 0.22 &times; 1.4 = s0 + 0.31mm
+sigma &asymp; drift &times; W / (2&radic;3) = 0.22 &times; 2.8 / 3.46 = 0.18mm
+ThHi  = mean + 2.8 &times; 0.18 + 0.5 = mean + 1.0mm
+laser[W] = s0 + drift &times; W = s0 + 0.62mm  <span class="cmt">&lt; ThHi &rarr; OK</span>
+</div>
+
+<p>Sui casi reali il problema si manifesta con drift piu' rapido o sigma ancora piu' bassa (valori identici float32 nella finestra). La soluzione e' aumentare la dead zone senza modificare la finestra baseline.</p>
+
+<h3>Soluzione: I_DetectionStartDeg = 15&deg;</h3>
+<p>Nei test su 1299 acquisizioni DB28160: <strong>60% delle early detection (&lt;30&deg;) corrette</strong> senza perdere saldature reali. Su DB28010 e DB28300 impatto trascurabile (&lt;2% miss aggiuntivi).</p>
+</section>
+
+<hr>
+<p style="color:var(--muted);font-size:12px;text-align:center;padding:20px 0">
+WeldFind v5.0 &mdash; Manuale tecnico completo &mdash; SCL v5.0 &middot; Python v5.0 &middot; Siemens S7-1500F
+</p>
+
+</main>
+</div>
+
+<script>
+const secs=document.querySelectorAll('section[id]');
+const lnks=document.querySelectorAll('nav a');
+window.addEventListener('scroll',()=>{
+  let cur='';
+  secs.forEach(s=>{if(window.scrollY>=s.offsetTop-90)cur=s.id;});
+  lnks.forEach(a=>{a.classList.toggle('active',a.getAttribute('href')==='#'+cur);});
+});
+lnks.forEach(a=>a.addEventListener('click',e=>{
+  e.preventDefault();
+  document.querySelector(a.getAttribute('href')).scrollIntoView({behavior:'smooth'});
+}));
+</script>
+</body>
+</html>
