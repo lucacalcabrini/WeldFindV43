@@ -1,0 +1,141 @@
+﻿FUNCTION_BLOCK "Fb955_RicercaSaldaturaAnello"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT 
+      I_GradiAttuali : LReal;
+      I_AnalogicaAttuale : Real;
+   END_VAR
+   VAR_INPUT RETAIN
+      I_InterasseSalvataggi : Real := 0.8;
+      "I_TolleranzaInizio-Fine" : Real := 0.5;
+      I_DistanzaMinSaldatura : Real := 1.0;
+      I_DistanzaMaxSaldatura : Real := 10.0;
+      I_LunghezzaPuntoPiano : Real := 2.0;
+      I_LunghezzaSaldatura : Real := 0.8;
+      I_LunghezzaFinestraRicerca : Real := 5.0;
+   END_VAR
+   VAR_INPUT 
+      I_RicercaNegativaAsse : Bool;
+      I_RicercaNegativaAnalogica : Bool;
+   END_VAR
+
+   VAR_IN_OUT 
+      IO_Interface : "UDT_TrovaGiunzioneCirc";
+   END_VAR
+
+   VAR 
+      SalvataggiGradi : Array[0..200] of Real;
+      SalvataggiAnalogica : Array[0..200] of Real;
+      FronteInizioRicerca {InstructionName := 'R_TRIG'; LibVersion := '1.0'; S7_SetPoint := 'False'} : R_TRIG;
+      GradiProssimoSalvataggio : Real;
+      ConteggioSalvataggi : Int;
+   END_VAR
+
+   VAR_TEMP 
+      I : Int;
+      FinestraMetàMeno : Real;
+      FinestraMetàPiu : Real;
+      PuntatoreRicercaSaldatura : DInt;
+      PuntatoreFineRicercaSaldatura : DInt;
+      PuntatoreFinePuntoPiano : DInt;
+      PuntoSaldaturaOK : Bool;
+      PuntoPianoOK : Bool;
+      GAttuali : Real;
+   END_VAR
+
+
+BEGIN
+	#GAttuali := LREAL_TO_REAL(#I_GradiAttuali);
+	
+	REGION CLREAR
+	    #FronteInizioRicerca(CLK := #IO_Interface.EnableRicerca);
+	    IF #FronteInizioRicerca.Q OR (#IO_Interface.ClearReq AND NOT #IO_Interface.ClearDone) THEN
+	        FOR #I := 0 TO 200 DO
+	            #SalvataggiGradi[#I] := 0.0;
+	            #SalvataggiAnalogica[#I] := 0.0;
+	        END_FOR;
+	        IF NOT #I_RicercaNegativaAsse THEN
+	            #GradiProssimoSalvataggio := #GAttuali + #I_InterasseSalvataggi;
+	        ELSE
+	            #GradiProssimoSalvataggio := #GAttuali - #I_InterasseSalvataggi;
+	        END_IF;
+	        #ConteggioSalvataggi := 0;
+	        #IO_Interface.ClearDone := TRUE;
+	    END_IF;
+	    IF #IO_Interface.EnableRicerca THEN
+	        #IO_Interface.ClearDone := FALSE;
+	    END_IF;
+	END_REGION
+	
+	REGION SALVATAGGIO
+	    IF #IO_Interface.EnableRicerca AND NOT #FronteInizioRicerca.Q AND NOT #IO_Interface.Trovata THEN
+	        #IO_Interface.ClearDone := FALSE;
+	        IF (NOT #I_RicercaNegativaAsse AND #GAttuali >= #GradiProssimoSalvataggio) OR
+	            (#I_RicercaNegativaAsse AND #GAttuali <= #GradiProssimoSalvataggio) THEN
+	            IF #GAttuali <> #SalvataggiGradi[1] THEN
+	                FOR #I := 199 TO 1 BY -1 DO
+	                    #SalvataggiGradi[#I + 1] := #SalvataggiGradi[#I];
+	                    #SalvataggiAnalogica[#I + 1] := #SalvataggiAnalogica[#I];
+	                END_FOR;
+	                
+	                #SalvataggiGradi[1] := #GAttuali;
+	                #SalvataggiAnalogica[1] := #I_AnalogicaAttuale;
+	                
+	                IF #ConteggioSalvataggi < 200 THEN
+	                    #ConteggioSalvataggi += 1;
+	                END_IF;
+	            END_IF;
+	            IF NOT #I_RicercaNegativaAsse THEN
+	                #GradiProssimoSalvataggio += #I_InterasseSalvataggi;
+	            ELSE
+	                #GradiProssimoSalvataggio -= #I_InterasseSalvataggi;
+	            END_IF;
+	        END_IF;
+	    END_IF;
+	    
+	END_REGION
+	
+	#PuntatoreRicercaSaldatura := ROUND(#I_LunghezzaFinestraRicerca / #I_InterasseSalvataggi);
+	#PuntatoreFineRicercaSaldatura :=#PuntatoreRicercaSaldatura + ROUND(#I_LunghezzaSaldatura/ #I_InterasseSalvataggi);
+	#PuntatoreFinePuntoPiano := ROUND(#I_LunghezzaPuntoPiano / #I_InterasseSalvataggi);
+	
+	IF NOT #I_RicercaNegativaAnalogica THEN
+	    #FinestraMetàMeno := #SalvataggiAnalogica[#PuntatoreFinePuntoPiano] + #I_DistanzaMinSaldatura;
+	    #FinestraMetàPiu := #SalvataggiAnalogica[#PuntatoreFinePuntoPiano] + #I_DistanzaMaxSaldatura;
+	ELSE
+	    #FinestraMetàMeno := #SalvataggiAnalogica[#PuntatoreFinePuntoPiano] - #I_DistanzaMaxSaldatura;
+	    #FinestraMetàPiu := #SalvataggiAnalogica[#PuntatoreFinePuntoPiano] - #I_DistanzaMinSaldatura;
+	END_IF;
+	
+	#PuntoPianoOK := true;
+	FOR #I := 1 TO #PuntatoreFinePuntoPiano DO
+	    IF ABS(#SalvataggiAnalogica[#I] - #SalvataggiAnalogica[#I+1]) > #"I_TolleranzaInizio-Fine" THEN
+	        #PuntoPianoOK := false;
+	    END_IF;
+	END_FOR;
+	
+	#PuntoSaldaturaOK := true;
+	FOR #I := #PuntatoreRicercaSaldatura TO #PuntatoreFineRicercaSaldatura DO
+	    IF #SalvataggiAnalogica[#I] < #FinestraMetàMeno OR
+	        #SalvataggiAnalogica[#I] > #FinestraMetàPiu THEN
+	        #PuntoSaldaturaOK := false;
+	    END_IF;
+	END_FOR;
+	
+	IF (*#SalvataggiAnalogica[#PuntatoreRicercaSaldatura] >= #FinestraMetàMeno AND
+	    #SalvataggiAnalogica[#PuntatoreRicercaSaldatura] <= #FinestraMetàPiu AND*)
+	    #PuntoSaldaturaOK AND
+	    #PuntoPianoOK AND
+	    #ConteggioSalvataggi > #PuntatoreRicercaSaldatura AND
+	    #IO_Interface.EnableRicerca AND NOT #FronteInizioRicerca.Q AND NOT #IO_Interface.Trovata THEN
+	    #IO_Interface.Trovata := true;
+	    #IO_Interface.OutPosizioneAsse := #SalvataggiGradi[#PuntatoreRicercaSaldatura];
+	    #IO_Interface.ClearDone := FALSE;
+	END_IF;
+	
+	IF NOT #IO_Interface.EnableRicerca THEN
+	    #IO_Interface.Trovata := FALSE;
+	END_IF;
+	
+END_FUNCTION_BLOCK
+

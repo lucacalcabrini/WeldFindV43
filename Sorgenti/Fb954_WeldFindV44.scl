@@ -1,0 +1,825 @@
+﻿FUNCTION_BLOCK "Fb954_WeldFindV44"
+{ S7_Optimized_Access := 'FALSE' }
+VERSION : 0.1
+   VAR_INPUT 
+      I_LaserValue : Real;   // Lettura laser corrente [mm]
+      I_CurrentAngle : LReal;   // Angolo encoder [deg] (qualsiasi range, anche negativo per CCW)
+      I_AxisTandSteel : Bool;   // Asse rotazione fermo
+      I_BaselineWindowDeg : Real := 10.0;   // Finestra look-back angolare per baseline [deg]
+      I_SigmaFactor : Real := 3.0;   // Fattore soglia: 2.5=sensibile 3=standard 4=conservativo
+      I_MinAbsDeviation : Real := 1.5;   // Scarto minimo assoluto [mm] ~ 1/3 altezza saldatura
+      I_HysteresisSigmas : Real := 0.5;   // Abbassa soglia di uscita cluster
+      I_MinConsecutive : Int := 3;   // Campioni minimi per confermare il cluster
+      I_MaxConsecutive : Int := 60;   // Campioni massimi per cluster valido
+      I_MinAngleDelta : Real := 0.5;   // Filtro: variazione angolare minima [deg]
+      I_MinLaserDelta : Real := 0.1;   // Filtro: variazione laser minima [mm]
+      I_StopOnWeld : Bool := TRUE;   // TRUE = esci subito su rilevamento (1Ã‚Â° giro) FALSE = continua giro completo, restituisce cluster migliore
+      I_MaxLaserValidValue : Real;
+      I_MinLaserValidValue : Real;
+      I_PeakPolarity : Int := 0;   // 0=picco positivo (sopra baseline), 1=picco negativo (sotto baseline), 2=entrambi (abs maggiore)
+   END_VAR
+
+   VAR_OUTPUT 
+      O_Ready : Bool;   // FB pronto, in attesa di bStartAcquisition
+      O_Busy : Bool;   // Acquisizione in corso
+      O_Done : Bool;   // Impulso 1 ciclo: analisi completata
+      O_Error : Bool;
+      O_ErrorCode : Int;   // 0=OK 1=Overflow 2=NoCampioni 3=ParamInvalidi 4=PolarityInvalid == Risultato principale (aggiornato non appena confermato) ==
+      O_DetectedPolarity : Int;   // 0=picco positivo rilevato, 1=picco negativo rilevato
+   END_VAR
+
+   VAR_IN_OUT 
+      IO_RicercaSaldatura : "UDT_TrovaGiunzioneCirc";
+   END_VAR
+
+   VAR 
+      arSamples : Array[0..#iMaxSamplesC] of Real;
+      arAngles : Array[0..#iMaxSamplesC] of Real;   // Angoli encoder grezzi (quota reale, anche negativa)
+      arThreshHigh : Array[0..#iMaxSamplesC] of Real;   // Soglia alta positiva
+      arThreshLow : Array[0..#iMaxSamplesC] of Real;   // Soglia isteresi positiva
+      arThreshHighNeg : Array[0..#iMaxSamplesC] of Real;   // *** NUOVO v4.3 *** Soglia bassa negativa
+      arThreshLowNeg : Array[0..#iMaxSamplesC] of Real;   // *** NUOVO v4.3 *** Soglia isteresi negativa
+      arMean : Array[0..#iMaxSamplesC] of Real;
+      arSigmaArr : Array[0..#iMaxSamplesC] of Real;
+      iState : Int;   // 0=Idle 1=Online 2=Done 3=Error Filtro acquisizione
+      rLastAngleSaved : Real;
+      rLastLaserSaved : Real;
+      bAngleExceeded : Bool;   // Cluster corrente (online)
+      bInCluster : Bool;
+      iClusterStart : Int;
+      iClusterCount : Int;
+      rClusterPeak : Real;
+      rClusterPeakDev : Real;
+      iPeakIndex : Int;   // Miglior cluster trovato (bStopOnWeld=FALSE)
+      rBestPeakDev : Real;
+      rBestPeakDevAbs : Real;   // *** NUOVO v4.3 *** Per confronto valore assoluto
+      iBestStart : Int;
+      iBestEnd : Int;
+      iBestPeakIdx : Int;
+      iBestCount : Int;
+      rBestPeakAbs : Real;   // Edge detection
+      iBestPolarity : Int;   // *** NUOVO v4.3 *** Polarita del miglior cluster
+      bStart_Prev : Bool;
+      bReset_Prev : Bool;   // Variabili temporanee ciclo (reset ogni campione accettato)
+      j : Int;
+      rAngDiff : Real;
+      rLaserDiff : Real;
+      rWinSum : Real;
+      rWinSumSq : Real;
+      iWinN : Int;
+      rM : Real;
+      rV : Real;
+      rS : Real;
+      rDev : Real;
+      rAngleCurrent : Real;
+      rThHi : Real;
+      rThLo : Real;
+      rThHiNeg : Real;   // *** NUOVO v4.3 ***
+      rThLoNeg : Real;   // *** NUOVO v4.3 ***
+      iCurIdx : Int;   // Indice corrente campione appena salvato Diagnostica baseline (calcolata a fine ciclo o su Done)
+      rTmpSum : Real;
+      i_diag : Int;
+      iDiagN : Int;
+      rVal : Real;
+      rWeldAngleStart : Real;   // Angolo inizio cluster [deg] (quota reale encoder)
+      rWeldAngleEnd : Real;   // Angolo fine cluster [deg] (quota reale encoder, live)
+      rPeakValue : Real;   // Valore assoluto picco [mm]
+      rPeakDeviation : Real;   // Deviazione picco dalla baseline [mm]
+      rPeakSigmas : Real;   // Qualita: SNR in sigma
+      iConsecutiveCount : Int;   // Campioni nel cluster (si aggiorna live)
+      iDetectedAtSample : Int;   // Indice campione in cui e scattato il flag
+      rDetectedAtAngle : Real;   // Angolo di rilevamento immediato [deg] (quota reale encoder) == Diagnostica baseline ==
+      rBaselineMean : Real;
+      rBaselineSigma : Real;
+      rAdaptiveThreshold : Real;   // == Statistiche cluster ==
+      iClustersFound : Int;
+      iClustersValid : Int;
+      bWrapAround : Bool;
+      bMultipleClusters : Bool;
+      iSamplesAcquired : Int;   // Aggiornato live Buffer campioni *** NUOVO v4.3 *** Stato cluster per polarita
+      iCurrentClusterPolarity : Int;   // 0=pos, 1=neg
+      bCheckPositive : Bool;   // TRUE se devo controllare picchi positivi
+      bCheckNegative : Bool;   // TRUE se devo controllare picchi negativi
+      rTotalTravel : Real;   // *** v4.3.1 *** Viaggio angolare totale [deg] per fine giro bidirezionale
+      rTravelAfterDet : Real;   // *** v4.4 *** Viaggio angolare accumulato dopo detection [deg]
+   END_VAR
+
+   VAR CONSTANT 
+      iMaxSamplesC : Int := 2000;
+      rPostDetTravelDegC : Real := 2.0;   // *** v4.4 *** Gradi da percorrere dopo detection prima del Done
+   END_VAR
+
+
+BEGIN
+	    (*=================================================================
+	      FB_WeldDetector_RealTime  v4.4
+	      Rilevamento IMMEDIATO posizione saldatura su cilindro rotante.
+	    
+	      NOVITA v4.3:
+	      ---------------------------------------------
+	      Aggiunto parametro I_PeakPolarity per scegliere la polarita
+	      del picco da rilevare:
+	        0 = Solo picchi POSITIVI (valore > baseline) [default]
+	        1 = Solo picchi NEGATIVI (valore < baseline)
+	        2 = ENTRAMBI (rileva quello con deviazione assoluta maggiore)
+	    
+	      Nuovo output O_DetectedPolarity indica la polarita rilevata:
+	        0 = picco positivo trovato
+	        1 = picco negativo trovato
+	    
+	      DIFFERENZA FONDAMENTALE rispetto a v3.0:
+	      ---------------------------------------------
+	      v3.0: acquisisci 360 gradi -> calcola soglie -> analizza cluster
+	            Il risultato era disponibile DOPO il giro completo.
+	    
+	      v4.x: tutto in UN SOLO ciclo PLC per ogni campione accettato.
+	            Per ogni nuovo campione:
+	              1. Doppio filtro (delta angolo + delta laser)
+	              2. Salva nel buffer
+	              3. Calcola soglia adattiva con finestra look-back
+	                 (FOR j singolo, max 720 iter: accettabile single-thread)
+	              4. Aggiorna cluster online
+	              5. Se cluster >= iMinConsecutive -> bWeldFound=TRUE subito!
+	    
+	      Se bStopOnWeld=TRUE  (default):
+	        -> Appena confermato, imposta output e va in Done.
+	        -> Il chiamante puo fermare il motore immediatamente.
+	    
+	      Se bStopOnWeld=FALSE:
+	        -> Continua il giro completo.
+	        -> Alla fine restituisce il cluster con il picco piu alto (in abs).
+	        -> Utile se ci sono possibili falsi positivi o
+	           si vuole discriminare saldatura da altri difetti.
+	    
+	      OUTPUT LIVE (disponibili prima di bDone):
+	        bWeldFound, rWeldAngleCenter, rWeldAngleStart,
+	        rPeakValue, iConsecutiveCount, iDetectedAtSample
+	    
+	      NOTA CPU SINGLE-THREAD:
+	        Lo Stato 1 esegue 1 ciclo PLC per ogni CAMPIONE ACCETTATO
+	        (non per ogni campione grezzo, grazie al doppio filtro).
+	        Il FOR interno scansiona al massimo iSamplesAcquired campioni
+	        gia salvati (<= 720). A inizio giro e quasi istantaneo,
+	        cresce gradualmente: nessun watchdog stop.
+	    
+	      Piattaforma : Siemens TIA Portal V16+  (S7-1200 / S7-1500)
+	      Linguaggio  : SCL (IEC 61131-3)
+	      Versione    : 4.4 - Post-detection travel + dead zone + scan retroattivo
+	    =================================================================*)
+	
+	#IO_RicercaSaldatura.ActualValue := #I_LaserValue;
+	#IO_RicercaSaldatura.ValidRangeValue := (#I_LaserValue >= #I_MinLaserValidValue AND #I_LaserValue <= #I_MaxLaserValidValue);
+	
+	// Cache angolo corrente (evita LREAL_TO_REAL multipli)
+	#rAngleCurrent := LREAL_TO_REAL(#I_CurrentAngle);
+	// *** v4.3.2 *** Angolo NON normalizzato: arAngles[] e output riportano
+	//   la quota reale dell'encoder (anche negativa per CCW).
+	//   I calcoli interni (finestra baseline, viaggio, filtro) usano tutti
+	//   ABS() + wrap 180 â†’ funzionano con qualsiasi valore.
+	
+	// *** NUOVO v4.3 *** Imposta flag polarita basati su I_PeakPolarity
+	CASE #I_PeakPolarity OF
+	    0:  // Solo positivi
+	        #bCheckPositive := TRUE;
+	        #bCheckNegative := FALSE;
+	    1:  // Solo negativi
+	        #bCheckPositive := FALSE;
+	        #bCheckNegative := TRUE;
+	    2:  // Entrambi
+	        #bCheckPositive := TRUE;
+	        #bCheckNegative := TRUE;
+	    ELSE
+	        // Valore non valido - errore
+	        #iState := 3;
+	        #O_Error := TRUE;
+	        #O_ErrorCode := 4;  // PolarityInvalid
+	        RETURN;
+	END_CASE;
+	
+	REGION Edge: bReset ---------------------------------------------------
+	    #IO_RicercaSaldatura.ClearDone := #bReset_Prev AND #IO_RicercaSaldatura.ClearReq;
+	    
+	    IF #IO_RicercaSaldatura.ClearReq AND NOT #bReset_Prev THEN
+	        #iState := 0;
+	        #O_Error := FALSE;
+	        #O_ErrorCode := 0;
+	        #IO_RicercaSaldatura.Trovata := FALSE;
+	        #O_Done := FALSE;
+	        #O_Busy := FALSE;
+	        #O_Ready := TRUE;
+	        #O_DetectedPolarity := 0;
+	        #iSamplesAcquired := 0;
+	        #iClustersFound := 0;
+	        #iClustersValid := 0;
+	        #bWrapAround := FALSE;
+	        #bMultipleClusters := FALSE;
+	        #bAngleExceeded := FALSE;
+	        #bInCluster := FALSE;
+	        #iClusterCount := 0;
+	        #rTotalTravel := 0.0;   // *** v4.3.1 ***
+	        #rTravelAfterDet := 0.0;   // *** v4.4 ***
+	        #rBestPeakDev := -1.0E10;
+	        #rBestPeakDevAbs := -1.0;
+	        #iBestPolarity := 0;
+	        #iCurrentClusterPolarity := 0;
+	        #IO_RicercaSaldatura.OutPosizioneAsse := 0.0;
+	        #rWeldAngleStart := 0.0;
+	        #rWeldAngleEnd := 0.0;
+	        #rPeakValue := 0.0;
+	        #rPeakDeviation := 0.0;
+	        #rPeakSigmas := 0.0;
+	        #iConsecutiveCount := 0;
+	        #iDetectedAtSample := 0;
+	        #rDetectedAtAngle := 0.0;
+	        #rLastAngleSaved := -1.0;
+	        #rLastLaserSaved := 0.0;
+	        FOR #j := 0 TO #iMaxSamplesC DO
+	            #arSamples[#j] := 0.0;
+	            #arThreshHigh[#j] := 0.0;
+	            #arAngles[#j] := 0.0;
+	            #arThreshLow[#j] := 0.0;
+	            #arThreshHighNeg[#j] := 0.0;
+	            #arThreshLowNeg[#j] := 0.0;
+	            #arMean[#j] := 0.0;
+	            #arSigmaArr[#j] := 0.0;
+	        END_FOR;
+	    END_IF;
+	    #bReset_Prev := #IO_RicercaSaldatura.ClearReq;
+	    
+	    IF #IO_RicercaSaldatura.EnableRicerca AND NOT #bStart_Prev THEN
+	        #iState := 1;
+	        #O_Error := FALSE;
+	        #O_ErrorCode := 0;
+	        #IO_RicercaSaldatura.Trovata := FALSE;
+	        #O_Done := FALSE;
+	        #O_Busy := FALSE;
+	        #O_Ready := TRUE;
+	        #O_DetectedPolarity := 0;
+	        #iSamplesAcquired := 0;
+	        #iClustersFound := 0;
+	        #iClustersValid := 0;
+	        #bWrapAround := FALSE;
+	        #bMultipleClusters := FALSE;
+	        #bAngleExceeded := FALSE;
+	        #bInCluster := FALSE;
+	        #iClusterCount := 0;
+	        #rTotalTravel := 0.0;   // *** v4.3.1 ***
+	        #rTravelAfterDet := 0.0;   // *** v4.4 ***
+	        #rBestPeakDev := -1.0E10;
+	        #rBestPeakDevAbs := -1.0;
+	        #iBestPolarity := 0;
+	        #iCurrentClusterPolarity := 0;
+	        #IO_RicercaSaldatura.OutPosizioneAsse := 0.0;
+	        #rWeldAngleStart := 0.0;
+	        #rWeldAngleEnd := 0.0;
+	        #rPeakValue := 0.0;
+	        #rPeakDeviation := 0.0;
+	        #rPeakSigmas := 0.0;
+	        #iConsecutiveCount := 0;
+	        #iDetectedAtSample := 0;
+	        #rDetectedAtAngle := 0.0;
+	        #rLastAngleSaved := -1.0;
+	        #rLastLaserSaved := 0.0;
+	        FOR #j := 0 TO #iMaxSamplesC DO
+	            #arSamples[#j] := 0.0;
+	            #arThreshHigh[#j] := 0.0;
+	            #arAngles[#j] := 0.0;
+	            #arThreshLow[#j] := 0.0;
+	            #arThreshHighNeg[#j] := 0.0;
+	            #arThreshLowNeg[#j] := 0.0;
+	            #arMean[#j] := 0.0;
+	            #arSigmaArr[#j] := 0.0;
+	        END_FOR;
+	    END_IF;
+	    #bStart_Prev := #IO_RicercaSaldatura.EnableRicerca;
+	END_REGION
+	
+	IF NOT #IO_RicercaSaldatura.EnableRicerca THEN
+	    #O_Ready := FALSE;
+	    #O_Busy := FALSE;
+	    RETURN;
+	END_IF;
+	
+	// Validazione parametri
+	IF #I_MinConsecutive > #I_MaxConsecutive THEN
+	    #iState := 3;
+	    #O_Error := TRUE;
+	    #O_ErrorCode := 3;
+	END_IF;
+	
+	CASE #iState OF
+	        
+	        // -------------------------------------------------------------
+	        // 0  IDLE
+	        // -------------------------------------------------------------
+	    0:
+	        #O_Ready := TRUE;
+	        #O_Busy := FALSE;
+	        #O_Done := FALSE;
+	        
+	        // -------------------------------------------------------------
+	        // 1  ONLINE DETECTION
+	        //    Tutto in un ciclo: filtro + soglia + cluster
+	        //
+	        //    Struttura per ciclo PLC:
+	        //    A) Guard wrap-around angolo
+	        //    B) Doppio filtro (delta_ang >= rMinAngleDelta AND delta_las >= rMinLaserDelta)
+	        //    C) Se filtro OK -> salva nel buffer a iSamplesAcquired
+	        //    D) Calcola soglia adattiva per il nuovo campione
+	        //       (FOR j singolo look-back, max 720 iter)
+	        //       *** v4.3: calcola soglie per ENTRAMBE le polarita ***
+	        //    E) Aggiorna logica cluster online (con check polarita)
+	        //    F) Se cluster confermato: output immediato
+	        //       bStopOnWeld=TRUE  -> vai a Stato 2
+	        //       bStopOnWeld=FALSE -> continua, aggiorna best cluster
+	        //    G) Check fine giro -> vai a Stato 2
+	        // -------------------------------------------------------------
+	    1:
+	        #O_Ready := FALSE;
+	        #O_Busy := TRUE;
+	        
+	        // A) Guard wrap-around: *** v4.3.1 *** usa viaggio totale (supporta CW e CCW)
+	        //    Aspetta almeno 5 gradi di viaggio prima di accettare fine giro
+	        IF NOT #bAngleExceeded AND #rTotalTravel > #I_BaselineWindowDeg THEN
+	            #bAngleExceeded := TRUE;
+	        END_IF;
+	        
+	        // B) Calcolo delta filtro
+	        IF #iSamplesAcquired = 0 THEN
+	            // Primo campione: bypass filtro angolo
+	            #rAngDiff := 1.0;
+	        ELSE
+	            #rAngDiff := ABS(#rAngleCurrent - #rLastAngleSaved);
+	            IF #rAngDiff > 180.0 THEN
+	                #rAngDiff := 360.0 - #rAngDiff;
+	            END_IF;
+	        END_IF;
+	        #rLaserDiff := ABS(#I_LaserValue - #rLastLaserSaved);
+	        
+	        // C) Salva campione solo se entrambi i filtri passano
+	        IF #rAngDiff >= #I_MinAngleDelta AND #rLaserDiff >= #I_MinLaserDelta AND #IO_RicercaSaldatura.ValidRangeValue AND NOT #I_AxisTandSteel THEN
+	            
+	            IF #iSamplesAcquired >= #iMaxSamplesC THEN
+	                // Buffer pieno: errore overflow
+	                #iState := 3;
+	                #O_Error := TRUE;
+	                #O_ErrorCode := 1;
+	                RETURN;
+	            END_IF;
+	            
+	            #iCurIdx := #iSamplesAcquired;
+	            #arSamples[#iCurIdx] := #I_LaserValue;
+	            #arAngles[#iCurIdx] := #rAngleCurrent;
+	            #rLastAngleSaved := #rAngleCurrent;
+	            #rLastLaserSaved := #I_LaserValue;
+	            #iSamplesAcquired := #iSamplesAcquired + 1;
+	            
+	            // *** v4.3.1 *** Aggiorna viaggio angolare totale (CW e CCW)
+	            IF #iCurIdx > 0 THEN
+	                #rAngDiff := ABS(#arAngles[#iCurIdx] - #arAngles[#iCurIdx - 1]);
+	                IF #rAngDiff > 180.0 THEN
+	                    #rAngDiff := 360.0 - #rAngDiff;
+	                END_IF;
+	                #rTotalTravel := #rTotalTravel + #rAngDiff;
+	            END_IF;
+	            
+	            // A-bis) *** v4.4 *** Post-detection travel: accumula viaggio sui campioni accettati.
+	            // Qui rAngDiff e rLastAngleSaved sono gia aggiornati con il campione corrente.
+	            IF #IO_RicercaSaldatura.Trovata AND #I_StopOnWeld THEN
+	                // rAngDiff qui e la distanza tra campione corrente e precedente (appena calcolata sopra)
+	                IF #iCurIdx > 0 THEN
+	                    #rAngDiff := ABS(#arAngles[#iCurIdx] - #arAngles[#iCurIdx - 1]);
+	                    IF #rAngDiff > 180.0 THEN
+	                        #rAngDiff := 360.0 - #rAngDiff;
+	                    END_IF;
+	                    #rTravelAfterDet := #rTravelAfterDet + #rAngDiff;
+	                END_IF;
+	                IF #rTravelAfterDet >= #rPostDetTravelDegC THEN
+	                    #iSamplesAcquired := #iCurIdx + 1;
+	                    #iState := 2;
+	                    RETURN;
+	                END_IF;
+	            END_IF;
+	            
+	            // D) Calcola soglia adattiva per il campione iCurIdx
+	            //    FOR singolo: scansiona campioni precedenti nella finestra angolare
+	            //    Iterazioni: al massimo iSamplesAcquired-1 (cresce da 0 a 719)
+	            #rWinSum := 0.0;
+	            #rWinSumSq := 0.0;
+	            #iWinN := 0;
+	            
+	            FOR #j := 0 TO #iSamplesAcquired - 2 DO
+	                // j scorre tutti i campioni PRECEDENTI a iCurIdx
+	                // *** v4.3.1 *** Distanza angolare minima (supporta CW e CCW)
+	                #rAngDiff := ABS(#arAngles[#iCurIdx] - #arAngles[#j]);
+	                IF #rAngDiff > 180.0 THEN
+	                    #rAngDiff := 360.0 - #rAngDiff;
+	                END_IF;
+	                IF #rAngDiff >= 1.0 AND #rAngDiff <= #I_BaselineWindowDeg THEN
+	                    #rVal := #arSamples[#j];
+	                    #rWinSum := #rWinSum + #rVal;
+	                    #rWinSumSq := #rWinSumSq + #rVal * #rVal;
+	                    #iWinN := #iWinN + 1;
+	                END_IF;
+	            END_FOR;
+	            
+	            IF #iWinN >= 3 THEN
+	                #rM := #rWinSum / INT_TO_REAL(#iWinN);
+	                #rV := #rWinSumSq / INT_TO_REAL(#iWinN) - #rM * #rM;
+	                IF #rV < 0.0 THEN
+	                    #rV := 0.0;
+	                END_IF;
+	                #rS := SQRT(#rV);
+	            ELSE
+	                // Finestra insufficiente: propaga soglia precedente
+	                IF #iCurIdx > 0 THEN
+	                    #rM := #arMean[#iCurIdx - 1];
+	                    #rS := #arSigmaArr[#iCurIdx - 1];
+	                ELSE
+	                    #rM := #I_LaserValue;
+	                    #rS := 0.0;
+	                END_IF;
+	            END_IF;
+	            
+	            #arMean[#iCurIdx] := #rM;
+	            #arSigmaArr[#iCurIdx] := #rS;
+	            
+	            // *** v4.3: Calcola soglie per ENTRAMBE le polarita ***
+	            // Soglie POSITIVE (valore > baseline)
+	            #rThHi := #rM + #I_SigmaFactor * #rS + #I_MinAbsDeviation;
+	            #rThLo := #rM + (#I_SigmaFactor - #I_HysteresisSigmas) * #rS + #I_MinAbsDeviation * 0.5;
+	            #arThreshHigh[#iCurIdx] := #rThHi;
+	            #arThreshLow[#iCurIdx] := #rThLo;
+	            
+	            // Soglie NEGATIVE (valore < baseline)
+	            #rThHiNeg := #rM - #I_SigmaFactor * #rS - #I_MinAbsDeviation;
+	            #rThLoNeg := #rM - (#I_SigmaFactor - #I_HysteresisSigmas) * #rS - #I_MinAbsDeviation * 0.5;
+	            #arThreshHighNeg[#iCurIdx] := #rThHiNeg;
+	            #arThreshLowNeg[#iCurIdx] := #rThLoNeg;
+	            
+	            // E) Aggiornamento cluster online
+	            #rVal := #I_LaserValue;
+	            #rDev := #rVal - #rM;  // Deviazione dalla media (puo essere + o -)
+	            
+	            IF NOT #bInCluster THEN
+	                // *** v4.3: Check apertura cluster per polarita configurata ***
+	                
+	                // Check apertura cluster POSITIVO
+	                IF #bCheckPositive AND #rVal >= #rThHi THEN
+	                    #bInCluster := TRUE;
+	                    #iCurrentClusterPolarity := 0;  // Positivo
+	                    #iClusterStart := #iCurIdx;
+	                    #iClusterCount := 1;
+	                    #rClusterPeak := #rVal;
+	                    #rClusterPeakDev := #rDev;  // Positivo
+	                    #iPeakIndex := #iCurIdx;
+	                    
+	                    // Check apertura cluster NEGATIVO
+	                ELSIF #bCheckNegative AND #rVal <= #rThHiNeg THEN
+	                    #bInCluster := TRUE;
+	                    #iCurrentClusterPolarity := 1;  // Negativo
+	                    #iClusterStart := #iCurIdx;
+	                    #iClusterCount := 1;
+	                    #rClusterPeak := #rVal;
+	                    #rClusterPeakDev := #rDev;  // Negativo
+	                    #iPeakIndex := #iCurIdx;
+	                END_IF;
+	                
+	            ELSIF #bInCluster THEN
+	                // *** v4.3: Continuazione/chiusura cluster basata sulla polarita corrente ***
+	                
+	                IF #iCurrentClusterPolarity = 0 THEN
+	                    // Cluster POSITIVO
+	                    IF #rVal >= #rThLo THEN
+	                        // Continuazione cluster positivo
+	                        #iClusterCount := #iClusterCount + 1;
+	                        IF #rDev > #rClusterPeakDev THEN
+	                            #rClusterPeak := #rVal;
+	                            #rClusterPeakDev := #rDev;
+	                            #iPeakIndex := #iCurIdx;
+	                        END_IF;
+	                        
+	                        // Aggiorna live rWeldAngleEnd durante il cluster
+	                        IF #IO_RicercaSaldatura.Trovata THEN
+	                            #rWeldAngleEnd := #arAngles[#iCurIdx];
+	                            #iConsecutiveCount := #iClusterCount;
+	                            IF #rClusterPeakDev > #rPeakDeviation THEN
+	                                #rPeakValue := #rClusterPeak;
+	                                #rPeakDeviation := #rClusterPeakDev;
+	                                #IO_RicercaSaldatura.OutPosizioneAsse := #arAngles[#iPeakIndex];
+	                            END_IF;
+	                        END_IF;
+	                        
+	                    ELSE
+	                        // Chiusura cluster positivo
+	                        #iClustersFound := #iClustersFound + 1;
+	                        IF #iClusterCount >= #I_MinConsecutive AND #iClusterCount <= #I_MaxConsecutive THEN
+	                            #iClustersValid := #iClustersValid + 1;
+	                            // *** v4.3: Confronto in valore assoluto per best cluster ***
+	                            IF ABS(#rClusterPeakDev) > #rBestPeakDevAbs THEN
+	                                #rBestPeakDevAbs := ABS(#rClusterPeakDev);
+	                                #rBestPeakDev := #rClusterPeakDev;
+	                                #rBestPeakAbs := #rClusterPeak;
+	                                #iBestStart := #iClusterStart;
+	                                #iBestEnd := #iCurIdx - 1;
+	                                #iBestPeakIdx := #iPeakIndex;
+	                                #iBestCount := #iClusterCount;
+	                                #iBestPolarity := 0;  // Positivo
+	                            END_IF;
+	                        END_IF;
+	                        #bInCluster := FALSE;
+	                        #iClusterCount := 0;
+	                    END_IF;
+	                    
+	                ELSE
+	                    // Cluster NEGATIVO
+	                    IF #rVal <= #rThLoNeg THEN
+	                        // Continuazione cluster negativo
+	                        #iClusterCount := #iClusterCount + 1;
+	                        // Per picchi negativi, il "migliore" e quello piu negativo (rDev piu negativo)
+	                        IF #rDev < #rClusterPeakDev THEN
+	                            #rClusterPeak := #rVal;
+	                            #rClusterPeakDev := #rDev;
+	                            #iPeakIndex := #iCurIdx;
+	                        END_IF;
+	                        
+	                        // Aggiorna live rWeldAngleEnd durante il cluster
+	                        IF #IO_RicercaSaldatura.Trovata THEN
+	                            #rWeldAngleEnd := #arAngles[#iCurIdx];
+	                            #iConsecutiveCount := #iClusterCount;
+	                            // Per negativi, confronto con valore assoluto
+	                            IF ABS(#rClusterPeakDev) > ABS(#rPeakDeviation) THEN
+	                                #rPeakValue := #rClusterPeak;
+	                                #rPeakDeviation := #rClusterPeakDev;
+	                                #IO_RicercaSaldatura.OutPosizioneAsse := #arAngles[#iPeakIndex];
+	                            END_IF;
+	                        END_IF;
+	                        
+	                    ELSE
+	                        // Chiusura cluster negativo
+	                        #iClustersFound := #iClustersFound + 1;
+	                        IF #iClusterCount >= #I_MinConsecutive AND #iClusterCount <= #I_MaxConsecutive THEN
+	                            #iClustersValid := #iClustersValid + 1;
+	                            // *** v4.3: Confronto in valore assoluto per best cluster ***
+	                            IF ABS(#rClusterPeakDev) > #rBestPeakDevAbs THEN
+	                                #rBestPeakDevAbs := ABS(#rClusterPeakDev);
+	                                #rBestPeakDev := #rClusterPeakDev;
+	                                #rBestPeakAbs := #rClusterPeak;
+	                                #iBestStart := #iClusterStart;
+	                                #iBestEnd := #iCurIdx - 1;
+	                                #iBestPeakIdx := #iPeakIndex;
+	                                #iBestCount := #iClusterCount;
+	                                #iBestPolarity := 1;  // Negativo
+	                            END_IF;
+	                        END_IF;
+	                        #bInCluster := FALSE;
+	                        #iClusterCount := 0;
+	                    END_IF;
+	                END_IF;
+	            END_IF;
+	            
+	            // F) Rilevamento immediato — solo dopo baseline stabile (>= I_BaselineWindowDeg)
+	            // *** v4.4 *** Dead zone: durante i primi I_BaselineWindowDeg gradi
+	            //   la baseline si costruisce — detection bloccata per evitare falsi positivi.
+	            IF #rTotalTravel >= #I_BaselineWindowDeg THEN
+	                
+	                IF #bInCluster AND #iClusterCount >= #I_MinConsecutive AND NOT #IO_RicercaSaldatura.Trovata THEN
+	                    // *** RILEVAMENTO IMMEDIATO (baseline stabile) ***
+	                    #IO_RicercaSaldatura.Trovata := TRUE;
+	                    #iDetectedAtSample := #iCurIdx;
+	                    #rDetectedAtAngle := #arAngles[#iCurIdx];
+	                    #O_DetectedPolarity := #iCurrentClusterPolarity;
+	                    #IO_RicercaSaldatura.OutPosizioneAsse := #arAngles[#iPeakIndex];
+	                    #rWeldAngleStart := #arAngles[#iClusterStart];
+	                    #rWeldAngleEnd := #arAngles[#iCurIdx];
+	                    #rPeakValue := #rClusterPeak;
+	                    #rPeakDeviation := #rClusterPeakDev;
+	                    #iConsecutiveCount := #iClusterCount;
+	                    IF #I_StopOnWeld THEN
+	                        #iClustersFound := #iClustersFound + 1;
+	                        #iClustersValid := #iClustersValid + 1;
+	                        #iBestStart := #iClusterStart;
+	                        #iBestEnd := #iCurIdx;
+	                        #iBestPeakIdx := #iPeakIndex;
+	                        #iBestCount := #iClusterCount;
+	                        #rBestPeakDev := #rClusterPeakDev;
+	                        #rBestPeakDevAbs := ABS(#rClusterPeakDev);
+	                        #rBestPeakAbs := #rClusterPeak;
+	                        #iBestPolarity := #iCurrentClusterPolarity;
+	                        // NON RETURN immediato: aspetta rPostDetTravelDegC gradi (blocco A-bis)
+	                    END_IF;
+	                    // bStopOnWeld=FALSE: continua, output aggiornato live
+	                END_IF;
+	                
+	                // F-bis) *** v4.4 *** Scan retroattivo — eseguito solo finche la saldatura
+	                // potrebbe essere nella dead zone (rTotalTravel < 2x I_BaselineWindowDeg).
+	                // Riusa variabili: j=indice, iWinN=contatore consecutivi, rVal=soglia.
+	                IF NOT #IO_RicercaSaldatura.Trovata AND #iCurIdx >= #I_MinConsecutive
+	                    AND #rTotalTravel < (#I_BaselineWindowDeg * 2.0) THEN
+	                    #iWinN := 0;
+	                    // Soglia positiva in rThHi, negativa in rThHiNeg (gia calcolate al passo D)
+	                    FOR #j := 0 TO #iCurIdx - 1 DO
+	                        IF (#bCheckPositive AND #arSamples[#j] >= #rThHi) OR
+	                            (#bCheckNegative AND #arSamples[#j] <= #rThHiNeg) THEN
+	                            #iWinN := #iWinN + 1;
+	                        ELSE
+	                            #iWinN := 0;
+	                        END_IF;
+	                        IF #iWinN >= #I_MinConsecutive AND NOT #IO_RicercaSaldatura.Trovata THEN
+	                            #IO_RicercaSaldatura.Trovata := TRUE;
+	                            #iDetectedAtSample := #j;
+	                            #rDetectedAtAngle := #arAngles[#j];
+	                            #O_DetectedPolarity := 0;
+	                            IF #bCheckNegative AND NOT #bCheckPositive THEN
+	                                #O_DetectedPolarity := 1;
+	                            END_IF;
+	                            #rDev := #arSamples[#j] - #rM;
+	                            #IO_RicercaSaldatura.OutPosizioneAsse := #arAngles[#j];
+	                            #rWeldAngleStart := #arAngles[#j - #iWinN + 1];
+	                            #rWeldAngleEnd := #arAngles[#j];
+	                            #rPeakValue := #arSamples[#j];
+	                            #rPeakDeviation := #rDev;
+	                            #iConsecutiveCount := #iWinN;
+	                            #iClustersFound := #iClustersFound + 1;
+	                            #iClustersValid := #iClustersValid + 1;
+	                            #iBestStart := #j - #iWinN + 1;
+	                            #iBestEnd := #j;
+	                            #iBestPeakIdx := #j;
+	                            #iBestCount := #iWinN;
+	                            #rBestPeakDev := #rDev;
+	                            #rBestPeakDevAbs := ABS(#rDev);
+	                            #rBestPeakAbs := #arSamples[#j];
+	                            #iBestPolarity := #O_DetectedPolarity;
+	                            IF #I_StopOnWeld THEN
+	                                #iSamplesAcquired := #iCurIdx + 1;
+	                                #iState := 2;
+	                                EXIT;
+	                            END_IF;
+	                        END_IF;
+	                    END_FOR;
+	                    #iWinN := 0;  // ripristina per uso successivo
+	                END_IF;
+	                
+	            END_IF;  // Fine blocco detection (rTotalTravel >= I_BaselineWindowDeg)
+	            
+	        END_IF;  // Fine blocco filtro
+	        
+	        // G) Fine giro: *** v4.3.1 *** viaggio angolare totale >= 380 (supporta CW e CCW)
+	        IF #bAngleExceeded AND #rTotalTravel >= 380.0 THEN
+	            // Cluster ancora aperto a fine buffer?
+	            IF #bInCluster THEN
+	                #bWrapAround := TRUE;
+	                #iClustersFound := #iClustersFound + 1;
+	                IF #iClusterCount >= #I_MinConsecutive AND #iClusterCount <= #I_MaxConsecutive THEN
+	                    #iClustersValid := #iClustersValid + 1;
+	                    IF ABS(#rClusterPeakDev) > #rBestPeakDevAbs THEN
+	                        #rBestPeakDevAbs := ABS(#rClusterPeakDev);
+	                        #rBestPeakDev := #rClusterPeakDev;
+	                        #rBestPeakAbs := #rClusterPeak;
+	                        #iBestStart := #iClusterStart;
+	                        #iBestEnd := #iSamplesAcquired - 1;
+	                        #iBestPeakIdx := #iPeakIndex;
+	                        #iBestCount := #iClusterCount;
+	                        #iBestPolarity := #iCurrentClusterPolarity;
+	                    END_IF;
+	                END_IF;
+	            END_IF;
+	            
+	            IF #iSamplesAcquired < 1 THEN
+	                #iState := 3;
+	                #O_Error := TRUE;
+	                #O_ErrorCode := 2;
+	                RETURN;
+	            END_IF;
+	            
+	            #iState := 2;
+	        END_IF;
+	        
+	        // -------------------------------------------------------------
+	        // 2  DONE
+	        //    Consolida risultati finali, calcola diagnostica baseline,
+	        //    imposta bDone per 1 ciclo poi torna a Idle.
+	        // -------------------------------------------------------------
+	    2:
+	        #O_Busy := FALSE;
+	        
+	        // Se bStopOnWeld=FALSE: consolida il best cluster trovato
+	        IF NOT #I_StopOnWeld AND #iClustersValid > 0 THEN
+	            #IO_RicercaSaldatura.Trovata := TRUE;
+	            #IO_RicercaSaldatura.OutPosizioneAsse := #arAngles[#iBestPeakIdx];
+	            #rWeldAngleStart := #arAngles[#iBestStart];
+	            #rWeldAngleEnd := #arAngles[#iBestEnd];
+	            #rPeakValue := #rBestPeakAbs;
+	            #rPeakDeviation := #rBestPeakDev;
+	            #iConsecutiveCount := #iBestCount;
+	            #O_DetectedPolarity := #iBestPolarity;
+	        END_IF;
+	        
+	        IF #iClustersValid > 1 THEN
+	            #bMultipleClusters := TRUE;
+	        END_IF;
+	        
+	        // Calcola rPeakSigmas ora che abbiamo la baseline diagnostica
+	        // FOR singolo su primi 30% campioni
+	        #rTmpSum := 0.0;
+	        #iDiagN := 0;
+	        FOR #i_diag := 0 TO #iSamplesAcquired * 3 / 10 DO
+	            #rTmpSum := #rTmpSum + #arMean[#i_diag];
+	            #iDiagN := #iDiagN + 1;
+	        END_FOR;
+	        IF #iDiagN > 0 THEN
+	            #rBaselineMean := #rTmpSum / INT_TO_REAL(#iDiagN);
+	        END_IF;
+	        
+	        #rTmpSum := 0.0;
+	        FOR #i_diag := 0 TO #iSamplesAcquired * 3 / 10 DO
+	            #rDev := #arSamples[#i_diag] - #rBaselineMean;
+	            #rTmpSum := #rTmpSum + #rDev * #rDev;
+	        END_FOR;
+	        IF #iDiagN > 0 THEN
+	            #rBaselineSigma := SQRT(#rTmpSum / INT_TO_REAL(#iDiagN));
+	            #rAdaptiveThreshold := #rBaselineMean + #I_SigmaFactor * #rBaselineSigma + #I_MinAbsDeviation;
+	        END_IF;
+	        
+	        // *** v4.3: Per picchi negativi, usa valore assoluto per calcolo sigmas ***
+	        IF #rBaselineSigma > 0.0 THEN
+	            #rPeakSigmas := ABS(#rPeakDeviation) / #rBaselineSigma;
+	        ELSE
+	            #rPeakSigmas := 0.0;
+	        END_IF;
+	        
+	        #O_Done := TRUE;
+	        #O_Ready := TRUE;
+	        #iState := 0;
+	        
+	        // -------------------------------------------------------------
+	        // 3  ERROR
+	        // -------------------------------------------------------------
+	    3:
+	        #O_Busy := FALSE;
+	        #O_Ready := FALSE;
+	        #O_Error := TRUE;
+	        
+	END_CASE;
+	
+	(*==============================================================
+	  GUIDA RAPIDA  v4.3 - RILEVAMENTO PICCHI POSITIVI/NEGATIVI
+	  ==============================================================
+	
+	  NOVITA v4.3:
+	  ------------
+	  I_PeakPolarity (Int, default 0):
+	    0 = Rileva solo picchi POSITIVI (laser > baseline) [default]
+	    1 = Rileva solo picchi NEGATIVI (laser < baseline)
+	    2 = Rileva ENTRAMBI, sceglie quello con |deviazione| maggiore
+	
+	  O_DetectedPolarity (Int):
+	    0 = Il picco rilevato e POSITIVO
+	    1 = Il picco rilevato e NEGATIVO
+	
+	  QUANDO USARE QUALE MODALITA:
+	  ----------------------------
+	  Polarita 0 (positivo): saldature che creano un rilievo
+	            -> il laser misura un valore MAGGIORE (piu vicino)
+	  
+	  Polarita 1 (negativo): saldature che creano una depressione/solco
+	            -> il laser misura un valore MINORE (piu lontano)
+	  
+	  Polarita 2 (entrambi): quando non si sa a priori il tipo
+	            -> l'algoritmo rilevera il picco piu significativo
+	
+	  SEQUENZA OPERATIVA:
+	  -------------------
+	  1. Impostare bEnable=TRUE, attendere bReady=TRUE
+	  2. Impostare I_PeakPolarity secondo il tipo di saldatura
+	  3. Iniziare a far girare il cilindro
+	  4. Portare bStartAcquisition a TRUE (fronte di salita)
+	     -> bBusy=TRUE, acquisizione avviata
+	  5a. [bStopOnWeld=TRUE]
+	      -> Non appena la saldatura passa: bWeldFound=TRUE
+	        rWeldAngleCenter disponibile IMMEDIATAMENTE
+	        O_DetectedPolarity indica se positivo(0) o negativo(1)
+	        bDone=TRUE nel ciclo successivo -> fermare motore
+	  5b. [bStopOnWeld=FALSE]
+	      -> bWeldFound=TRUE appena confermato (live)
+	        Il FB continua il giro completo cercando cluster migliori
+	        bDone=TRUE a fine giro -> risultato finale consolidato
+	
+	  CODICI ERRORE:
+	  --------------
+	  0 = OK
+	  1 = Buffer overflow (>5000 campioni)
+	  2 = Nessun campione acquisito
+	  3 = Parametri invalidi (MinConsec > MaxConsec)
+	  4 = I_PeakPolarity non valido (deve essere 0, 1 o 2)
+	
+	  QUALITA RILEVAMENTO (rPeakSigmas - disponibile su bDone):
+	  ---------------------------------------------------------
+	  < 3  : debole, rivedere parametri
+	  3..5 : accettabile
+	  > 5  : robusto
+	
+	==============================================================*)
+	
+END_FUNCTION_BLOCK
+

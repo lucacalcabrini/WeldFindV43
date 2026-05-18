@@ -1,0 +1,11 @@
+{
+  "plc_ip": "172.28.10.2",
+  "plc_rack": "0",
+  "plc_slot": "1",
+  "scl_path": "C:\\Users\\lcalcabrini\\Desktop\\WeldFindV43\\Sorgenti",
+  "sqlite_path": "C:/Users/lcalcabrini/WeldExport/weld_archive.sqlite",
+  "autoexp_interval_ms": "100",
+  "sim_window_default": "2.8",
+  "sim_sigma_default": "2.8",
+  "sim_mabs_default": "0.5"
+}

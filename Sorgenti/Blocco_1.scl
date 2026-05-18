@@ -1,0 +1,497 @@
+﻿FUNCTION_BLOCK "Blocco_1"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT 
+      I_value : Real;   // measurement value
+      I_axisPos : Real;   // axis position
+      I_axisMoving : Bool;   // axis moving
+      I_deltaToll : Real := 0.3;   // min delta value for searching ONLY POSITIVE VALUE (in case mode is set on 1 or on 2 the delta are automaticly multiplied * -1). If it used the min and max this is the min value for the difference
+      I_maxConsecutiveCorrectValue : Int := 10;
+      I_minValue : Real := 160.0;   // min value for measurement for noise value
+      I_maxValue : Real := 300.0;   // max value for measurement for noise value
+      I_filterElements : Int := 10;   // element to ignore after and before a noise value
+      I_maxDelta : Real := 1.0;   // ONLY POSITIVE VALUE (in case mode is set on 1 or on 2 the delta are automaticly multiplied * -1)
+      I_mobileAvargeElements : Int := 20;   // element for mobile avarage
+      I_minMaxSearchingElements : Int := 20;   // only for min and max search. It is the number of elements where searching the min and max
+      I_SourceMode : Int;   // 0 = only positive Delta - 1 = only negativa Delta - 2 = positive/negative delta are allowed
+      I_searchMode : Int;
+   END_VAR
+
+   VAR_IN_OUT 
+      IO_Interface : "UDT_TrovaGiunzioneCirc";
+   END_VAR
+
+   VAR 
+      values : Array[0..#maxArray] of Struct
+         axisPos : Real;
+         value : Real;
+         delta : Real;
+      END_STRUCT;
+      index : Int;
+      mobileAvarage : Real;
+      consecutiveCorrectValue : Int;
+      firstIndex : Int;
+      lastIndex : Int;
+      maxV : Real;
+      seriesDeltaAvarage : Real;
+      v : Array[0..#maxArray] of Real;
+      p : Array[0..#maxArray] of Real;
+      d : Array[0..#maxArray] of Real;
+      m : Array[0..#maxArray] of Real;
+      j : Int;
+      countFilter : Int;
+      averageElementCount : Int;
+      indexDebug : Int;
+      outOfRange : Bool;
+      calculatedMin : Real;
+      calculatedMax : Real;
+      ClearAuxFp : Bool;
+      ClearIndexStart : Int;
+      ClearIndexEnd : Int;
+      fMin : Real;
+      fMAx : Real;
+      FirtClear : Bool;
+   END_VAR
+   VAR RETAIN
+      searchModeold : Int;
+   END_VAR
+   VAR 
+      elementDelay : Int;
+   END_VAR
+
+   VAR_TEMP 
+      i : Int;
+      ValueInvalid : Bool;
+   END_VAR
+
+   VAR CONSTANT 
+      maxArray : Int := 4999;
+   END_VAR
+
+
+BEGIN
+	
+	//-------------------------------------------------------------------------------
+	//   $$$$$$\  $$$$$$$$\ $$$$$$$$\
+	//  $$  __$$\ \__$$  __|$$  _____|
+	//  $$ /  \__|   $$ |   $$ |
+	//  $$ |         $$ |   $$$$$\
+	//  $$ |         $$ |   $$  __|
+	//  $$ |  $$\    $$ |   $$ |
+	//  \$$$$$$  |   $$ |   $$ |
+	//   \______/    \__|   \__|        AUTOMAZIONI srl
+	//
+	//  Zona Ind.le Vocabolo Felceto 7 ;
+	//  62024 Matelica (MC),Italia ;
+	//  Tel.: +39 0737 787068 ;
+	//  Fax : +39 0737 782028 ;
+	//-------------------------------------------------------------------------------
+	// Title:            FB_WeldingSearch
+	// Author:           Alessio Fiori 
+	// Comment/Function: Questa funzione serve per cercare la saldatura su un componente
+	//                   La funzione ha bisogno di un abilitazione per cominciare a salvare i campioni 
+	//                   e di una pulizia quando la funzione è inattiva o prima di iniziare una nuova ricerca.
+	//                   Una volta abilitata la funzione salva i campioni dello strumento di lettura.
+	//                   Mentre salva va a calcolarsi una media mobile di n elementi. 
+	//                   I campioni vengono comunque filtrati in un range di valido di lettura, che inizialmente 
+	//                   vale il massimo range, ma la prima volta che si raggiunge il numero di campioni sufficienti 
+	//                   per calcolare la media, questo viene preso come target di validità dei dai + o - una tolleranza.
+	//                   Questo per scartare eventuali letture buone ma fuori dal range per il pezzo in analisi.
+	//                   Man mano che la funzione lavora calcola la media mobile prende il valore attuale e calcola il loro
+	//                   delta. Quando si raggiunge una serie di delta maggiori di un valore e lunga n elementi la ricerca è stata
+	//                   soddisfatta.
+	//                   E' stato creato anche un secondo metodo di ricerca che lavora sulla differenza tra minimo e massimo su dei valori su
+	//                   cui si applica un filtro medio per ammorbidire i dati. 
+	//                   Per filtrare meglio i valori letti alla lettura di un valore fuori range vengono scartati le precedenti n letture
+	//                   e scarto le succesive n letture buone per cercare di eliminare meglio il rumore.
+	// Change log table:
+	// Version  Date            Expert in charge / Changes applied
+	// 01.00.00                 Alessio Fiori / primo rilascio 
+	// 01.01.00 14/03/2025      Alessio Fiori / aggiunto metodo di ricerca per differenza tra minimo e massimo
+	// 01.01.00 19/06/2025      Alessio Fiori / nel metodo di ricerca della differenza tra minimo e massimo gesto il cas
+	//                          per cercare il picco positivo. Controllando che distanza del valore attuale tra il massimo valore
+	//                          ed il minimo. In questo caso la distanza con io minimo deve essere minore
+	//-------------------------------------------------------------------------------
+	//
+	IF #IO_Interface.EnableRicerca THEN
+	    #IO_Interface.ClearDone := false;
+	    #ClearIndexStart := 0;
+	    #ClearIndexEnd := 99;
+	END_IF;
+	IF NOT #IO_Interface.EnableRicerca AND (#I_searchMode <> #searchModeold) THEN
+	    #IO_Interface.ClearDone := false;
+	    #FirtClear := false;
+	    #ClearIndexStart := 0;
+	    #ClearIndexEnd := 99;
+	    #searchModeold := #I_searchMode;
+	END_IF;
+	IF (#IO_Interface.ClearReq OR NOT #FirtClear) AND NOT #IO_Interface.ClearDone THEN
+	    
+	    #IO_Interface.ClearDone := #ClearIndexEnd >= #maxArray;
+	    
+	    FOR #i := #ClearIndexStart TO #ClearIndexEnd DO
+	        #values[#i].axisPos := 0.0;
+	        #values[#i].value := 0.0;
+	        #values[#i].delta := 0.0;
+	        
+	        #v[#i] := 0.0;
+	        #p[#i] := 0.0;
+	        #m[#i] := 0.0;
+	        #d[#i] := 0.0;
+	    END_FOR;
+	    
+	    #ClearIndexStart := #ClearIndexStart + 100;
+	    
+	    IF #ClearIndexStart > (#maxArray - 99) THEN
+	        #ClearIndexStart := (#maxArray - 99);
+	    END_IF;
+	    
+	    #ClearIndexEnd := #ClearIndexStart + 99;
+	    
+	    IF #ClearIndexEnd > #maxArray THEN
+	        #ClearIndexEnd := #maxArray;
+	    END_IF;
+	    #FirtClear := true;
+	    #index := 0;
+	    #IO_Interface.Trovata := false;
+	    #consecutiveCorrectValue := 0;
+	    #lastIndex := 0;
+	    #firstIndex := 0;
+	    #averageElementCount := 0;
+	    #indexDebug := 0;
+	    #calculatedMin := #I_minValue;
+	    #calculatedMax := #I_maxValue;
+	    #elementDelay := 0;
+	    #maxV := 0.0;
+	END_IF;
+	// alla prima lettura di un fuori scala cancello un certo numero di campioni precedenti 
+	IF (#I_value <= #calculatedMin OR #I_value >= #calculatedMax) AND #IO_Interface.EnableRicerca AND
+	    NOT #outOfRange
+	THEN
+	    IF #index < #I_filterElements THEN
+	        #index := 0;
+	    ELSE
+	        #index -= #I_filterElements;
+	        #elementDelay -= #I_filterElements;
+	        IF #index < 0 THEN
+	            #index := 0;
+	        END_IF;
+	        IF #elementDelay < 0 THEN
+	            #elementDelay := 0;
+	        END_IF;
+	    END_IF;
+	    FOR #i := #index TO #index + #I_filterElements DO
+	        #values[#i].axisPos := 0.0;
+	        #values[#i].value := 0.0;
+	        #values[#i].delta := 0.0;
+	        
+	        #p[#i] := 0.0;
+	    END_FOR;
+	    
+	    #outOfRange := true;
+	    // #IO_Interface.ClearReq := true;
+	END_IF;
+	
+	// salto un certo numero di elementi dopo che rientro da un valore fuori scala 
+	IF #outOfRange AND
+	    ((#I_value > #calculatedMin AND #I_value < #calculatedMax) OR #countFilter > 0)
+	THEN
+	    #countFilter += 1;
+	    
+	    IF #countFilter <= #I_filterElements THEN
+	        RETURN;
+	    END_IF;
+	    #outOfRange := false;
+	    #countFilter := 0;
+	    // #elementDelay := 0;
+	    // #averageElementCount := 0; // ricomincio a calcolare la media dopo aver scartato un certo numero di campioni
+	    // questo per gestire una rotazione fuori asse
+	END_IF;
+	
+	
+	// valutazione campioni 
+	IF NOT #IO_Interface.ClearReq AND #IO_Interface.EnableRicerca AND #I_axisMoving AND #IO_Interface.EnableRicerca AND
+	    #index >= 0 AND #index <= #maxArray AND
+	    #I_value > #calculatedMin AND #I_value < #calculatedMax
+	THEN
+	    #values[#index].axisPos := #I_axisPos;
+	    #values[#index].value := #I_value;
+	    
+	    CASE #I_searchMode OF
+	        1: // min e max con media
+	            REGION riceca con min e max
+	                // IF #averageElementCount >= #I_mobileAvargeElements AND NOT #IO_Interface.Trovata THEN
+	                IF #averageElementCount > 0 AND NOT #IO_Interface.Trovata THEN
+	                    #countFilter := 0;
+	                    #mobileAvarage := 0;
+	                    #j := 0;
+	                    IF #averageElementCount < #I_mobileAvargeElements THEN
+	                        FOR #i := #index - 1 TO #index - #averageElementCount BY -1 DO
+	                            IF #values[#i].value > #calculatedMin THEN
+	                                #mobileAvarage := #mobileAvarage + #values[#i].value;
+	                                #j += 1;
+	                            END_IF;
+	                        END_FOR;
+	                    ELSE
+	                        FOR #i := #index - 1 TO #index - #I_mobileAvargeElements BY -1 DO
+	                            IF #values[#i].value > #calculatedMin THEN
+	                                #mobileAvarage := #mobileAvarage + #values[#i].value;
+	                                #j += 1;
+	                            END_IF;
+	                        END_FOR;
+	                    END_IF;
+	                    #mobileAvarage := #mobileAvarage / INT_TO_REAL(#j);
+	                    #values[#index].value := #I_value;
+	                    #values[#index].delta := #mobileAvarage; // per questa modalità di ricerca mi salvo la media sul delta. Questo per utilizzare un valore mediato come filtro sui valori
+	                    // alla prima volta calcolo il min e il max ammesso per i valori
+	                    IF #calculatedMin = #I_minValue AND
+	                        #calculatedMax = #I_maxValue
+	                    THEN
+	                        #calculatedMin := #mobileAvarage - 25.0;
+	                        #calculatedMax := #mobileAvarage + 10.0; // voglio essere piu severo allontanandomi dal pezzo 
+	                    END_IF;
+	                    
+	                    #d[#indexDebug] := #values[#index].delta;
+	                    #m[#indexDebug] := #mobileAvarage;
+	                    // se la divverenza tra la quota index e quella precedente non di discostano almeno di 0.05 scarto il valore
+	                    #ValueInvalid := ((ABS(#values[#index].axisPos - #values[#index - 1].axisPos) < 0.05) AND
+	                    (ABS(#values[#index].value - #values[#index - 1].value) < 0.05));
+	                    
+	                    // se il valore è uguale al precedente si in posizione che in valore lo scarto 
+	                    IF #ValueInvalid OR
+	                        (ABS(#values[#index].delta - #values[#index].value) > #I_maxDelta)
+	                    THEN
+	                        #values[#index].axisPos := 0.0;
+	                        #values[#index].value := 0.0;
+	                        #values[#index].delta := 0.0;
+	                        RETURN;
+	                    END_IF;
+	                    
+	                    #elementDelay += 1;
+	                    
+	                    //IF #averageElementCount >= (#I_minMaxSearchingElements + #I_mobileAvargeElements) THEN
+	                    IF #elementDelay >= (#I_minMaxSearchingElements + #I_mobileAvargeElements) THEN
+	                        // per la ricerca del minimo e del massimo uso il valori mediati
+	                        #fMin := #values[#index].delta;
+	                        #fMAx := #values[#index].delta;
+	                        FOR #i := #index TO #index - #I_minMaxSearchingElements BY -1 DO
+	                            IF #values[#i].delta > #fMAx THEN
+	                                #fMAx := #values[#i].delta;
+	                            END_IF;
+	                            IF #values[#i].delta < #fMin THEN
+	                                #fMin := #values[#i].delta;
+	                            END_IF;
+	                        END_FOR;
+	                        
+	                        #j := 0;
+	                        #IO_Interface.OutPosizioneAsse := 0.0;
+	                        #seriesDeltaAvarage := ABS(#fMAx - #fMin);
+	                        // controllo se la differenza tra minimo e massimo è in tolleranza
+	                        // cosi cerco il picco
+	                        CASE #I_SourceMode OF
+	                            1:  // negativa
+	                                IF ABS(#fMAx - #fMin) > #I_deltaToll THEN //1.0 THEN 
+	                                    #firstIndex := #index - #I_mobileAvargeElements;
+	                                    #lastIndex := #index;
+	                                    #seriesDeltaAvarage := ABS(#fMAx - #fMin);
+	                                    #maxV := #values[#index].delta - #fMin;
+	                                    #values[2000].axisPos := #fMin;
+	                                    #values[2000].value := #fMAx;
+	                                    #values[2000].delta := #values[#index].delta;
+	                                    #values[2001].axisPos := #index;
+	                                    #values[2001].value := #values[#index].axisPos;
+	                                    #values[2001].delta := #I_SourceMode;
+	                                    
+	                                    IF #values[#index].delta - #fMin < #fMAx - #values[#index].delta THEN
+	                                        // #maxV := 1.0;
+	                                        FOR #i := #firstIndex TO #lastIndex DO
+	                                            #j := #j + 1;
+	                                            #IO_Interface.OutPosizioneAsse := #IO_Interface.OutPosizioneAsse + #values[#i].axisPos;
+	                                        END_FOR;
+	                                        #IO_Interface.OutPosizioneAsse := #IO_Interface.OutPosizioneAsse / #j;
+	                                        #IO_Interface.Trovata := true;
+	                                    END_IF;
+	                                END_IF;
+	                            0:// 0 = only positive
+	                                IF ABS(#fMAx - #fMin) > #I_deltaToll AND
+	                                    #fMAx - #values[#index].delta < #values[#index].delta - #fMin
+	                                THEN //1.0 THEN 
+	                                    #firstIndex := #index - #I_mobileAvargeElements;
+	                                    #lastIndex := #index;
+	                                    #seriesDeltaAvarage := ABS(#fMAx - #fMin);
+	                                    FOR #i := #firstIndex TO #lastIndex DO
+	                                        #j := #j + 1;
+	                                        #IO_Interface.OutPosizioneAsse := #IO_Interface.OutPosizioneAsse + #values[#i].axisPos;
+	                                    END_FOR;
+	                                    #IO_Interface.OutPosizioneAsse := #IO_Interface.OutPosizioneAsse / #j;
+	                                    #IO_Interface.Trovata := true;
+	                                END_IF;
+	                            ELSE
+	                                IF ABS(#fMAx - #fMin) > #I_deltaToll THEN //1.0 THEN 
+	                                    #firstIndex := #index - #I_mobileAvargeElements;
+	                                    #lastIndex := #index;
+	                                    #seriesDeltaAvarage := ABS(#fMAx - #fMin);
+	                                    FOR #i := #firstIndex TO #lastIndex DO
+	                                        #j := #j + 1;
+	                                        #IO_Interface.OutPosizioneAsse := #IO_Interface.OutPosizioneAsse + #values[#i].axisPos;
+	                                    END_FOR;
+	                                    #IO_Interface.OutPosizioneAsse := #IO_Interface.OutPosizioneAsse / #j;
+	                                    #IO_Interface.Trovata := true;
+	                                END_IF;
+	                        END_CASE;
+	                        
+	                        // IF ABS(#fMAx - #fMin) > #I_deltaToll THEN //1.0 THEN 
+	                        //     #firstIndex := #index - #I_mobileAvargeElements;
+	                        //     #lastIndex := #index - 1;
+	                        //     #seriesDeltaAvarage := ABS(#fMAx - #fMin);
+	                        //     FOR #i := #firstIndex TO #lastIndex DO
+	                        //         #j := #j + 1;
+	                        //         #IO_Interface.OutPosizioneAsse := #IO_Interface.OutPosizioneAsse + #values[#i].axisPos;
+	                        //     END_FOR;
+	                        //     #IO_Interface.OutPosizioneAsse := #IO_Interface.OutPosizioneAsse / #j;
+	                        //     #IO_Interface.Trovata := true;
+	                        // END_IF;
+	                    END_IF;
+	                END_IF;
+	            END_REGION
+	        ELSE
+	            REGION ricerca con delta
+	                #countFilter := 0;
+	                // #averageElementCount += 1;
+	                // media mobile
+	                IF #averageElementCount >= #I_mobileAvargeElements THEN
+	                    
+	                    #mobileAvarage := 0;
+	                    #j := 0;
+	                    FOR #i := #index - 1 TO #index - #I_mobileAvargeElements BY -1 DO
+	                        IF #values[#i].value > #calculatedMin THEN
+	                            #mobileAvarage := #mobileAvarage + #values[#i].value;
+	                            #j += 1;
+	                        END_IF;
+	                    END_FOR;
+	                    
+	                    #mobileAvarage := #mobileAvarage / INT_TO_REAL(#j);
+	                    
+	                    // alla prima volta calcolo il min e il max ammesso per i valori
+	                    IF #calculatedMin = #I_minValue AND
+	                        #calculatedMax = #I_maxValue
+	                    THEN
+	                        #calculatedMin := #mobileAvarage - 25.0;
+	                        #calculatedMax := #mobileAvarage + 15.0; // voglio essere piu severo allontanandomi dal pezzo 
+	                    END_IF;
+	                    
+	                    // #values[#index].delta := ABS(#mobileAvarage - #values[#index].value);
+	                    #values[#index].delta := #mobileAvarage - #values[#index].value;
+	                    #d[#indexDebug] := #values[#index].delta;
+	                    #m[#indexDebug] := #mobileAvarage;
+	                    // se la divverenza tra la quota index e quella precedente non di discostano almeno di 0.05 scarto il valore
+	                    #ValueInvalid := ((ABS(#values[#index].axisPos - #values[#index - 1].axisPos) < 0.05) AND (ABS(#values[#index].value - #values[#index - 1].value) < 0.05));
+	                    CASE #I_SourceMode OF
+	                        0:  // 0 = only positive Delta
+	                            IF #values[#index].delta > #I_maxDelta OR #ValueInvalid
+	                            THEN
+	                                #values[#index].axisPos := 0.0;
+	                                #values[#index].value := 0.0;
+	                                #values[#index].delta := 0.0;
+	                                RETURN;
+	                            END_IF;
+	                        1:  // 1 = only negativa Delta
+	                            IF #values[#index].delta < (#I_maxDelta * -1.0) OR #ValueInvalid
+	                            THEN
+	                                #values[#index].axisPos := 0.0;
+	                                #values[#index].value := 0.0;
+	                                #values[#index].delta := 0.0;
+	                                RETURN;
+	                            END_IF;
+	                        2:  // 2 = positive/negative delta are allowed
+	                            IF #values[#index].delta < (#I_maxDelta * -1.0) OR #values[#index].delta > #I_maxDelta OR #ValueInvalid
+	                            THEN
+	                                #values[#index].axisPos := 0.0;
+	                                #values[#index].value := 0.0;
+	                                #values[#index].delta := 0.0;
+	                                RETURN;
+	                            END_IF;
+	                    END_CASE;
+	                    
+	                    // #delta :=#mobileAvarage - #values[#index].value;
+	                    IF NOT #IO_Interface.Trovata THEN
+	                        
+	                        CASE #I_SourceMode OF
+	                            0:  // 0 = only positive Delta
+	                                IF #values[#index].delta > #I_deltaToll THEN
+	                                    IF #consecutiveCorrectValue = 0 THEN
+	                                        #firstIndex := #index;
+	                                    END_IF;
+	                                    #consecutiveCorrectValue += 1;
+	                                ELSE
+	                                    #consecutiveCorrectValue := 0;
+	                                END_IF;
+	                            1:  // 1 = only negativa Delta
+	                                IF #values[#index].delta < (#I_deltaToll * -1.0) THEN
+	                                    IF #consecutiveCorrectValue = 0 THEN
+	                                        #firstIndex := #index;
+	                                    END_IF;
+	                                    #consecutiveCorrectValue += 1;
+	                                ELSE
+	                                    #consecutiveCorrectValue := 0;
+	                                END_IF;
+	                            2:  // 2 = positive/negative delta are allowed
+	                                IF #values[#index].delta < (#I_deltaToll * -1.0) OR #values[#index].delta > #I_deltaToll THEN
+	                                    IF #consecutiveCorrectValue = 0 THEN
+	                                        #firstIndex := #index;
+	                                    END_IF;
+	                                    #consecutiveCorrectValue += 1;
+	                                ELSE
+	                                    #consecutiveCorrectValue := 0;
+	                                END_IF;
+	                        END_CASE;
+	                        
+	                        IF #consecutiveCorrectValue >= #I_maxConsecutiveCorrectValue THEN
+	                            // controllo se dentro la serie c'è un picco di valore 
+	                            #maxV := 0.0;
+	                            #lastIndex := #index;
+	                            #j := 0;
+	                            #IO_Interface.OutPosizioneAsse := 0.0;
+	                            #seriesDeltaAvarage := 0.0;
+	                            FOR #i := #firstIndex TO #lastIndex DO
+	                                // IF #values[#i].axisPos <= 0 THEN
+	                                //     CONTINUE;
+	                                // END_IF;
+	                                #j := #j + 1;
+	                                #IO_Interface.OutPosizioneAsse := #IO_Interface.OutPosizioneAsse + #values[#i].axisPos;
+	                                #seriesDeltaAvarage := #seriesDeltaAvarage + #values[#i].delta;
+	                                #maxV := MAX(IN1 := #maxV, IN2 := #values[#i].delta);
+	                            END_FOR;
+	                            #IO_Interface.OutPosizioneAsse := #IO_Interface.OutPosizioneAsse / #j;
+	                            #seriesDeltaAvarage := #seriesDeltaAvarage / #j;
+	                            
+	                            // IF (#maxV - #seriesDeltaAvarage) > 0.2 THEN
+	                            #IO_Interface.Trovata := true;
+	                            // ELSE
+	                            //     #consecutiveCorrectValue := 0;
+	                            //     #lastIndex := 0;
+	                            //     #firstIndex := 0;
+	                            // END_IF;
+	                            
+	                        END_IF;
+	                    END_IF;
+	                END_IF;
+	            END_REGION
+	    END_CASE;
+	    // IF #averageElementCount < #I_mobileAvargeElements THEN
+	    // IF #averageElementCount < (#I_minMaxSearchingElements + #I_mobileAvargeElements) THEN
+	    #averageElementCount += 1;
+	    // END_IF;
+	    #index += 1;
+	    
+	END_IF;
+	
+	#IO_Interface.ActualValue := #I_value;
+	#IO_Interface.ValidRangeValue := #IO_Interface.ActualValue >= #calculatedMin AND #IO_Interface.ActualValue <= #calculatedMax;
+	
+	
+	
+	
+	
+END_FUNCTION_BLOCK
+
