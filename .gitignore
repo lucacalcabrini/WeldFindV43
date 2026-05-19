@@ -9,3 +9,4 @@ build/
 *.log
 *.exe
 _weld_update.bat
+WeldDetectoSetup.par
