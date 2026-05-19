@@ -1364,6 +1364,8 @@ class WeldViewerApp(tk.Tk):
         # *** v5.0 *** se non esiste il file impostazioni, apri popup al primo avvio
         if not os.path.isfile(self._SETTINGS_FILE):
             self.after(800, self._first_run_settings)
+        # Controlla aggiornamenti GitHub (non bloccante, timeout 5s)
+        self.after(300, self._check_for_updates)
         # Controlla librerie all'avvio (non bloccante)
         self.after(500, self._startup_check_libs)
         # Cleanup alla chiusura
@@ -1439,6 +1441,121 @@ class WeldViewerApp(tk.Tk):
                         parent=self)
             except Exception as e:
                 messagebox.showerror("Errore", f"Errore: {e}", parent=self)
+
+    # ── AUTO-UPDATE ───────────────────────────────────────────
+    _GITHUB_REPO = "lucacalcabrini/WeldFindV43"
+
+    def _check_for_updates(self):
+        """Avvia controllo aggiornamenti in background (timeout 5s).
+        Se non trova connessione entro 5s, lancia normalmente senza bloccare."""
+        import threading
+        threading.Thread(target=self._update_thread, daemon=True).start()
+
+    def _update_thread(self):
+        import urllib.request, json
+        try:
+            url = f"https://api.github.com/repos/{self._GITHUB_REPO}/releases/latest"
+            req = urllib.request.Request(url, headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "WeldDetector-AutoUpdater",
+            })
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+
+            latest_tag = data.get("tag_name", "").lstrip("v")  # es. "5.0.27"
+
+            def _ver(v):
+                try:    return tuple(int(x) for x in v.split("."))
+                except: return (0,)
+
+            if _ver(latest_tag) <= _ver(APP_VERSION):
+                return  # già aggiornato o versione sconosciuta
+
+            # Cerca asset .exe
+            exe_asset = next(
+                (a for a in data.get("assets", []) if a["name"].endswith(".exe")),
+                None
+            )
+            if not exe_asset:
+                return
+
+            self.after(0, lambda: self._offer_update(
+                latest_tag,
+                exe_asset["browser_download_url"],
+                exe_asset["name"],
+                exe_asset.get("size", 0),
+            ))
+        except Exception:
+            pass  # nessuna connessione o errore → lancia normalmente
+
+    def _offer_update(self, new_ver, url, filename, size_bytes):
+        size_mb = size_bytes / 1024 / 1024
+        if messagebox.askyesno(
+            "🔄 Aggiornamento disponibile",
+            f"Versione  v{new_ver}  disponibile!\n"
+            f"Versione attuale:  v{APP_VERSION}\n\n"
+            f"Dimensione:  {size_mb:.1f} MB\n\n"
+            f"Scarico e riavvio ora?",
+            parent=self
+        ):
+            import threading
+            threading.Thread(
+                target=self._download_and_restart,
+                args=(url, filename),
+                daemon=True
+            ).start()
+
+    def _download_and_restart(self, url, filename):
+        import urllib.request, subprocess
+        try:
+            if not getattr(sys, 'frozen', False):
+                self.after(0, lambda: messagebox.showinfo(
+                    "Info",
+                    "Auto-update disponibile solo nell'exe compilato.\n"
+                    "Scarica manualmente la nuova versione da GitHub.",
+                    parent=self))
+                return
+
+            exe_path = sys.executable
+            exe_dir  = os.path.dirname(exe_path)
+            exe_name = os.path.basename(exe_path)
+            new_exe  = os.path.join(exe_dir, filename)
+
+            self.after(0, lambda: self.title("⬇  Download aggiornamento in corso…"))
+
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "WeldDetector-AutoUpdater"})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = resp.read()
+
+            with open(new_exe, "wb") as f:
+                f.write(data)
+
+            # Batch script: aspetta chiusura app, rinomina, riavvia
+            bat = os.path.join(exe_dir, "_weld_update.bat")
+            with open(bat, "w") as f:
+                f.write("@echo off\n")
+                f.write("timeout /t 2 /nobreak >nul\n")
+                f.write(f'del /f "{exe_path}"\n')
+                f.write(f'ren "{new_exe}" "{exe_name}"\n')
+                f.write(f'start "" "{exe_path}"\n')
+                f.write('del /f "%~f0"\n')
+
+            subprocess.Popen(
+                ["cmd", "/c", bat],
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+            )
+            self.after(0, self.destroy)
+
+        except Exception as e:
+            self.after(0, lambda err=str(e): messagebox.showerror(
+                "Errore aggiornamento",
+                f"Download fallito:\n{err}\n\n"
+                f"Scarica manualmente da:\n"
+                f"https://github.com/{self._GITHUB_REPO}/releases/latest",
+                parent=self))
+            self.after(0, lambda: self.title(
+                f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
 
     # ── STYLE ─────────────────────────────────────────────────
     def _style(self):
