@@ -7,3 +7,5 @@ build/
 *.spec
 .env
 *.log
+*.exe
+_weld_update.bat
