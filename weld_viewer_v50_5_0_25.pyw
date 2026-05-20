@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.35"
+APP_VERSION = "5.0.36"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -1362,7 +1362,7 @@ class WeldViewerApp(tk.Tk):
         self._pv_global_sql_path = tk.StringVar(value=_default_sql)
         self._style();  self._build_ui()
         # *** v5.0 *** se non esiste il file impostazioni, apri popup al primo avvio
-        if not os.path.isfile(self._settings_file_actual):
+        if not os.path.isfile(self._SETTINGS_FILE):
             self.after(800, self._first_run_settings)
         # Pulizia file residui aggiornamento precedente (bat + exe _new)
         self.after(100, self._cleanup_update_leftovers)
@@ -2638,16 +2638,11 @@ class WeldViewerApp(tk.Tk):
         webbrowser.open(f"file:///" + tmp.replace("\\", "/"))
 
 
-
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # IMPOSTAZIONI  --  WeldDetecto.ini
+    # IMPOSTAZIONI  --  C:\ProgramData\WeldDetecto\WeldDetecto.ini
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    _SETTINGS_FILENAME  = "WeldDetecto.ini"
-    _SETTINGS_SEARCH_DIRS = [
-        APP_DIR,
-        r"C:\ProgramData\WeldDetecto",
-        r"D:\ProgramData\WeldDetecto",
-    ]
+    _SETTINGS_DIR  = r"C:\ProgramData\WeldDetecto"
+    _SETTINGS_FILE = r"C:\ProgramData\WeldDetecto\WeldDetecto.ini"
     _SETTINGS_DEFAULTS = {
         "plc_ip":              "172.28.2.1",
         "plc_rack":            "0",
@@ -2659,76 +2654,41 @@ class WeldViewerApp(tk.Tk):
         "sim_mabs_default":    "0.5",
     }
 
-    # ------------------------------------------------------------------ ricerca
-    def _find_settings_file(self) -> str:
-        """Ritorna il percorso del primo file impostazioni trovato, oppure APP_DIR/WeldDetecto.ini."""
-        import os
-        fn = self._SETTINGS_FILENAME
-        # cerca .ini poi .par in ogni cartella
-        for d in self._SETTINGS_SEARCH_DIRS:
-            p = os.path.join(d, fn)
-            if os.path.isfile(p):
-                return p
-        for d in self._SETTINGS_SEARCH_DIRS:
-            p = os.path.join(d, "WeldDetectoSetup.par")
-            if os.path.isfile(p):
-                return p
-        # default: APP_DIR/WeldDetecto.ini (potrebbe non esistere ancora)
-        return os.path.join(self._SETTINGS_SEARCH_DIRS[0], fn)
-
     def _first_run_settings(self):
-        """Apre il popup impostazioni al primo avvio (file .ini non trovato)."""
         self.app_log(
-            f"File impostazioni non trovato ({self._settings_file_actual}) — configurazione iniziale",
+            f"Primo avvio: configurazione salvata in {self._SETTINGS_FILE}",
             "warn")
         self._open_settings(first_run=True)
 
     # ----------------------------------------------------------------- carica
     def _load_settings(self) -> dict:
-        import configparser, json, os
-        self._settings_file_actual = self._find_settings_file()
+        import configparser, os
         s = dict(self._SETTINGS_DEFAULTS)
-        path = self._settings_file_actual
-        if not os.path.isfile(path):
+        if not os.path.isfile(self._SETTINGS_FILE):
+            # crea cartella + file con valori di default
+            try:
+                os.makedirs(self._SETTINGS_DIR, exist_ok=True)
+                self._save_settings_dict(s)
+            except Exception as e:
+                try: self.app_log(f"Impossibile creare impostazioni: {e}", "err")
+                except Exception: pass
             return s
-        # .ini  →  configparser
-        if path.lower().endswith(".ini"):
-            try:
-                cp = configparser.ConfigParser()
-                cp.read(path, encoding="utf-8")
-                for sect in cp.sections():
-                    for k, v in cp.items(sect):
-                        s[k] = v
-            except Exception as e:
-                try: self.app_log(f"Errore lettura .ini: {e}", "err")
-                except Exception: pass
-        else:
-            # legacy .par  →  JSON
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    s.update(json.load(f))
-            except Exception as e:
-                try: self.app_log(f"Errore lettura .par: {e}", "err")
-                except Exception: pass
+        try:
+            cp = configparser.ConfigParser()
+            cp.read(self._SETTINGS_FILE, encoding="utf-8")
+            for sect in cp.sections():
+                for k, v in cp.items(sect):
+                    s[k] = v
+        except Exception as e:
+            try: self.app_log(f"Errore lettura impostazioni: {e}", "err")
+            except Exception: pass
         return s
 
     # ------------------------------------------------------------------ salva
     def _save_settings_dict(self, s: dict, path: str = None):
         import configparser, os
-        if path is None:
-            path = getattr(self, "_settings_file_actual", None)
-        if path is None or not path.lower().endswith(".ini"):
-            # forza .ini nella prima dir disponibile
-            for d in self._SETTINGS_SEARCH_DIRS:
-                try:
-                    os.makedirs(d, exist_ok=True)
-                    path = os.path.join(d, self._SETTINGS_FILENAME)
-                    break
-                except Exception:
-                    continue
         try:
-            d = os.path.dirname(path)
-            if d: os.makedirs(d, exist_ok=True)
+            os.makedirs(self._SETTINGS_DIR, exist_ok=True)
             cp = configparser.ConfigParser()
             cp["PLC"] = {
                 "plc_ip":   s.get("plc_ip",   self._SETTINGS_DEFAULTS["plc_ip"]),
@@ -2744,10 +2704,9 @@ class WeldViewerApp(tk.Tk):
                 "sim_sigma_default":   s.get("sim_sigma_default",   "2.8"),
                 "sim_mabs_default":    s.get("sim_mabs_default",    "0.5"),
             }
-            with open(path, "w", encoding="utf-8") as f:
+            with open(self._SETTINGS_FILE, "w", encoding="utf-8") as f:
                 cp.write(f)
-            self._settings_file_actual = path
-            return path
+            return self._SETTINGS_FILE
         except Exception as e:
             try: self.app_log(f"Impostazioni non salvate: {e}", "err")
             except Exception: pass
@@ -2762,7 +2721,7 @@ class WeldViewerApp(tk.Tk):
         dlg.title("Prima configurazione  --  WeldDetecto v50" if first_run else
                   "Impostazioni  --  WeldDetecto v50")
         dlg.configure(bg=DARK_BG)
-        dlg.geometry("560x580")
+        dlg.geometry("530x390")
         dlg.resizable(False, False)
         dlg.grab_set()
         s = self._settings
@@ -2801,66 +2760,10 @@ class WeldViewerApp(tk.Tk):
                    command=lambda: sv_sql.set(
                        filedialog.askopenfilename(
                            title="Seleziona SQLite",
-                           filetypes=[("SQLite", "*.sqlite *.db3 *.db"), ("Tutti", "*.*")]) or sv_sql.get())
+                           filetypes=[("SQLite", "*.sqlite *.db3 *.db"),
+                                      ("Tutti", "*.*")]) or sv_sql.get())
                    ).pack(side="left")
         fields["sqlite_path"] = sv_sql
-
-        # -- File parametri
-        fp_lf = ttk.LabelFrame(dlg, text="  File parametri  ", padding=10)
-        fp_lf.pack(fill="x", padx=14, pady=4)
-        r_fp = ttk.Frame(fp_lf); r_fp.pack(fill="x")
-        sv_fp = tk.StringVar(value=getattr(self, "_settings_file_actual", ""))
-        ttk.Entry(r_fp, textvariable=sv_fp, width=36, state="readonly").pack(side="left", padx=4)
-
-        def _load_from_file():
-            import configparser, json, os
-            # 1) seleziona il file sorgente
-            src = filedialog.askopenfilename(
-                title="Carica file parametri",
-                filetypes=[("Parametri", "*.ini *.par"), ("INI", "*.ini"),
-                           ("PAR", "*.par"), ("Tutti", "*.*")])
-            if not src: return
-            # 2) leggi i parametri dal file sorgente senza toccare _settings_file_actual
-            tmp = dict(self._SETTINGS_DEFAULTS)
-            if src.lower().endswith(".ini"):
-                try:
-                    cp = configparser.ConfigParser()
-                    cp.read(src, encoding="utf-8")
-                    for sect in cp.sections():
-                        for k, v in cp.items(sect):
-                            tmp[k] = v
-                except Exception as e:
-                    self.app_log(f"Errore lettura {src}: {e}", "err"); return
-            else:
-                try:
-                    with open(src, "r", encoding="utf-8") as f:
-                        tmp.update(json.load(f))
-                except Exception as e:
-                    self.app_log(f"Errore lettura {src}: {e}", "err"); return
-            # 3) chiedi DOVE salvare il nuovo .ini (default: C:\ProgramData\WeldDetecto)
-            default_dir = r"C:\ProgramData\WeldDetecto"
-            try: os.makedirs(default_dir, exist_ok=True)
-            except Exception: default_dir = self._SETTINGS_SEARCH_DIRS[0]
-            dest = filedialog.asksaveasfilename(
-                title="Salva file parametri come...",
-                initialdir=default_dir,
-                initialfile=self._SETTINGS_FILENAME,
-                defaultextension=".ini",
-                filetypes=[("INI", "*.ini"), ("Tutti", "*.*")])
-            if not dest: return
-            # 4) aggiorna i campi del dialog con i parametri letti
-            for k, sv in fields.items():
-                if k in tmp: sv.set(tmp[k])
-            sv_rack.set(tmp.get("plc_rack", "0"))
-            sv_slot.set(tmp.get("plc_slot", "1"))
-            # 5) aggiorna il percorso di destinazione mostrato nel dialog
-            self._settings_file_actual = dest
-            sv_fp.set(dest)
-            self.app_log(f"Parametri letti da: {src}", "ok")
-            self.app_log(f"Salvataggio destinazione: {dest} (confermato al click Salva)", "info")
-
-        ttk.Button(r_fp, text="📂 Carica da file…", width=18,
-                   command=_load_from_file).pack(side="left", padx=6)
 
         # -- Bottoni
         bf = ttk.Frame(dlg); bf.pack(fill="x", padx=14, pady=12)
@@ -2868,7 +2771,8 @@ class WeldViewerApp(tk.Tk):
         def _save():
             for k, sv in fields.items(): self._settings[k] = sv.get()
             for attr, key in [("_pv_plc_ip", "plc_ip"),
-                               ("_pv_plc_rack", "plc_rack"), ("_pv_plc_slot", "plc_slot")]:
+                               ("_pv_plc_rack", "plc_rack"),
+                               ("_pv_plc_slot", "plc_slot")]:
                 sv2 = getattr(self, attr, None)
                 if sv2: sv2.set(self._settings[key])
             sqp = self._settings.get("sqlite_path", "")
@@ -2878,7 +2782,7 @@ class WeldViewerApp(tk.Tk):
                     sv2 = getattr(self, attr, None)
                     if sv2: sv2.set(sqp)
             p = self._save_settings()
-            if p and os.path.isfile(p):
+            if p:
                 self.app_log(f"Impostazioni salvate: {p}", "ok")
             dlg.destroy()
 
@@ -2886,9 +2790,12 @@ class WeldViewerApp(tk.Tk):
                    command=_save).pack(side="left", padx=4)
         ttk.Button(bf, text="Default",
                    command=lambda: [sv.set(self._SETTINGS_DEFAULTS.get(k, ""))
-                                    for k, sv in fields.items()]).pack(side="left", padx=4)
+                                    for k, sv in fields.items()]
+                   ).pack(side="left", padx=4)
         ttk.Button(bf, text="Annulla",
                    command=dlg.destroy).pack(side="right", padx=4)
+        ttk.Label(dlg, text=f"File: {self._SETTINGS_FILE}",
+                  style="Muted.TLabel", font=("Consolas", 7)).pack(pady=(0, 6))
 
     def _open_utilities_menu(self):
         """Popup che permette di aprire SQLite Import o SQLite Query in finestra Toplevel."""
