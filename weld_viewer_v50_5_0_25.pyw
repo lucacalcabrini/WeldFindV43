@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.29"
+APP_VERSION = "5.0.30"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -2797,22 +2797,51 @@ class WeldViewerApp(tk.Tk):
         ttk.Entry(r_fp, textvariable=sv_fp, width=36, state="readonly").pack(side="left", padx=4)
 
         def _load_from_file():
-            p = filedialog.askopenfilename(
+            import configparser, json, os
+            # 1) seleziona il file sorgente
+            src = filedialog.askopenfilename(
                 title="Carica file parametri",
                 filetypes=[("Parametri", "*.ini *.par"), ("INI", "*.ini"),
                            ("PAR", "*.par"), ("Tutti", "*.*")])
-            if not p: return
-            self._settings_file_actual = p
-            reloaded = self._load_settings()
-            self._settings.update(reloaded)
-            # aggiorna i campi del dialog
+            if not src: return
+            # 2) leggi i parametri dal file sorgente senza toccare _settings_file_actual
+            tmp = dict(self._SETTINGS_DEFAULTS)
+            if src.lower().endswith(".ini"):
+                try:
+                    cp = configparser.ConfigParser()
+                    cp.read(src, encoding="utf-8")
+                    for sect in cp.sections():
+                        for k, v in cp.items(sect):
+                            tmp[k] = v
+                except Exception as e:
+                    self.app_log(f"Errore lettura {src}: {e}", "err"); return
+            else:
+                try:
+                    with open(src, "r", encoding="utf-8") as f:
+                        tmp.update(json.load(f))
+                except Exception as e:
+                    self.app_log(f"Errore lettura {src}: {e}", "err"); return
+            # 3) chiedi DOVE salvare il nuovo .ini (default: C:\ProgramData\WeldDetecto)
+            default_dir = r"C:\ProgramData\WeldDetecto"
+            try: os.makedirs(default_dir, exist_ok=True)
+            except Exception: default_dir = self._SETTINGS_SEARCH_DIRS[0]
+            dest = filedialog.asksaveasfilename(
+                title="Salva file parametri come...",
+                initialdir=default_dir,
+                initialfile=self._SETTINGS_FILENAME,
+                defaultextension=".ini",
+                filetypes=[("INI", "*.ini"), ("Tutti", "*.*")])
+            if not dest: return
+            # 4) aggiorna i campi del dialog con i parametri letti
             for k, sv in fields.items():
-                if k in reloaded:
-                    sv.set(reloaded[k])
-            sv_rack.set(reloaded.get("plc_rack", "0"))
-            sv_slot.set(reloaded.get("plc_slot", "1"))
-            sv_fp.set(p)
-            self.app_log(f"Parametri caricati da: {p}", "ok")
+                if k in tmp: sv.set(tmp[k])
+            sv_rack.set(tmp.get("plc_rack", "0"))
+            sv_slot.set(tmp.get("plc_slot", "1"))
+            # 5) aggiorna il percorso di destinazione mostrato nel dialog
+            self._settings_file_actual = dest
+            sv_fp.set(dest)
+            self.app_log(f"Parametri letti da: {src}", "ok")
+            self.app_log(f"Salvataggio destinazione: {dest} (confermato al click Salva)", "info")
 
         ttk.Button(r_fp, text="📂 Carica da file…", width=18,
                    command=_load_from_file).pack(side="left", padx=6)
