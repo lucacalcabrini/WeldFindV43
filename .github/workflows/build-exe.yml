@@ -38,7 +38,7 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --name "WeldDetector_v${{ steps.version.outputs.ver }}" weld_viewer_v50_5_0_25.pyw
+          pyinstaller --onefile --windowed --icon=icon.ico --name "WeldDetector_v${{ steps.version.outputs.ver }}" weld_viewer_v50_5_0_25.pyw
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -61,4 +61,4 @@ jobs:
             Non richiede installazione di Python o librerie aggiuntive.
 
             ### Note
-            Il file `WeldDetectoSetup.par` viene creato automaticamente nella stessa cartella dell'exe al primo avvio.
+            Il file `WeldDetecto.ini` viene creato automaticamente nella stessa cartella dell'exe al primo avvio.
