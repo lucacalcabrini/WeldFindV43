@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.31"
+APP_VERSION = "5.0.32"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -2619,7 +2619,6 @@ class WeldViewerApp(tk.Tk):
         "plc_ip":              "172.28.2.1",
         "plc_rack":            "0",
         "plc_slot":            "1",
-        "scl_path":            "",
         "sqlite_path":         "",
         "autoexp_interval_ms": "100",
         "sim_window_default":  "2.8",
@@ -2704,8 +2703,7 @@ class WeldViewerApp(tk.Tk):
                 "plc_slot": s.get("plc_slot",  self._SETTINGS_DEFAULTS["plc_slot"]),
             }
             cp["Paths"] = {
-                "scl_path":    s.get("scl_path",    ""),
-                "sqlite_path": s.get("sqlite_path",  ""),
+                "sqlite_path": s.get("sqlite_path", ""),
             }
             cp["Simulator"] = {
                 "autoexp_interval_ms": s.get("autoexp_interval_ms", "100"),
@@ -2758,21 +2756,6 @@ class WeldViewerApp(tk.Tk):
         sv_slot = tk.StringVar(value=s.get("plc_slot", "1"))
         ttk.Entry(r_rs, textvariable=sv_slot, width=5).pack(side="left", padx=4)
         fields["plc_rack"] = sv_rack; fields["plc_slot"] = sv_slot
-
-        # -- SCL
-        scl_lf = ttk.LabelFrame(dlg, text="  File SCL  ", padding=10)
-        scl_lf.pack(fill="x", padx=14, pady=4)
-        r_scl = ttk.Frame(scl_lf); r_scl.pack(fill="x")
-        ttk.Label(r_scl, text="Percorso SCL:", style="Muted.TLabel", width=22).pack(side="left")
-        sv_scl = tk.StringVar(value=s.get("scl_path", ""))
-        ttk.Entry(r_scl, textvariable=sv_scl, width=24).pack(side="left", padx=4)
-        ttk.Button(r_scl, text="...", width=3,
-                   command=lambda: sv_scl.set(
-                       filedialog.askopenfilename(
-                           title="Seleziona SCL",
-                           filetypes=[("SCL", "*.scl"), ("Tutti", "*.*")]) or sv_scl.get())
-                   ).pack(side="left")
-        fields["scl_path"] = sv_scl
 
         # -- SQLite
         sql_lf = ttk.LabelFrame(dlg, text="  Database SQLite  ", padding=10)
