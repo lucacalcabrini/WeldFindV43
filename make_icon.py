@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 import math, os
 
 def draw_icon(size=256):
-    img = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+    img = Image.new("RGBA", (size, size), (34, 139, 34, 255))   # verde foresta
     d   = ImageDraw.Draw(img)
     s   = size / 256
     ink = (30, 40, 60, 255)
