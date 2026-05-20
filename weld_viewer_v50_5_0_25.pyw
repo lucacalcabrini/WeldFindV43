@@ -78,8 +78,8 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.28"
-APP_BUILD   = "2026-05-19"
+APP_VERSION = "5.0.29"
+APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
 # ── Nascondi console CMD su Windows ──────────────────────
@@ -99,7 +99,7 @@ if sys.platform == "win32":
 # ── Pulizia processi: uccide tutto il sottoalbero alla chiusura ──
 import os, signal, atexit
 
-# Cartella dell'exe (PyInstaller) o dello script (.pyw) — usata per WeldDetectoSetup.par
+# Cartella dell'exe (PyInstaller) o dello script (.pyw) — path primaria per WeldDetecto.ini
 if getattr(sys, 'frozen', False):
     APP_DIR = os.path.dirname(sys.executable)
 else:
@@ -1355,14 +1355,14 @@ class WeldViewerApp(tk.Tk):
         self.minsize(1100, 680)
         self.configure(bg=DARK_BG)
         self.db_data = None;  self.comp_data = None;  self.sim_result = None
-        self._settings = self._load_settings()  # *** v5.0 *** WeldDetectoSetup.par
+        self._settings = self._load_settings()  # *** v5.0 *** WeldDetecto.ini
         # _pv_global_sql_path: path SQLite condiviso da simulatore, statistiche, query
         _default_sql = self._settings.get('sqlite_path',
             os.path.join(os.path.expanduser('~'), 'WeldExport', 'weld_archive.sqlite'))
         self._pv_global_sql_path = tk.StringVar(value=_default_sql)
         self._style();  self._build_ui()
         # *** v5.0 *** se non esiste il file impostazioni, apri popup al primo avvio
-        if not os.path.isfile(self._SETTINGS_FILE):
+        if not os.path.isfile(self._settings_file_actual):
             self.after(800, self._first_run_settings)
         # Controlla aggiornamenti GitHub (non bloccante, timeout 5s)
         self.after(300, self._check_for_updates)
@@ -2607,60 +2607,131 @@ class WeldViewerApp(tk.Tk):
 
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # IMPOSTAZIONI  --  WeldDetectoSetup.par
+    # IMPOSTAZIONI  --  WeldDetecto.ini
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    _SETTINGS_FILE = os.path.join(APP_DIR, "WeldDetectoSetup.par")
+    _SETTINGS_FILENAME  = "WeldDetecto.ini"
+    _SETTINGS_SEARCH_DIRS = [
+        APP_DIR,
+        r"C:\ProgramData\WeldDetecto",
+        r"D:\ProgramData\WeldDetecto",
+    ]
     _SETTINGS_DEFAULTS = {
-        "plc_ip":       "172.28.2.1",
-        "plc_rack":     "0",
-        "plc_slot":     "1",
-        "scl_path":     "",
-        "sqlite_path":  "",
+        "plc_ip":              "172.28.2.1",
+        "plc_rack":            "0",
+        "plc_slot":            "1",
+        "scl_path":            "",
+        "sqlite_path":         "",
         "autoexp_interval_ms": "100",
         "sim_window_default":  "2.8",
         "sim_sigma_default":   "2.8",
         "sim_mabs_default":    "0.5",
     }
 
+    # ------------------------------------------------------------------ ricerca
+    def _find_settings_file(self) -> str:
+        """Ritorna il percorso del primo file impostazioni trovato, oppure APP_DIR/WeldDetecto.ini."""
+        import os
+        fn = self._SETTINGS_FILENAME
+        # cerca .ini poi .par in ogni cartella
+        for d in self._SETTINGS_SEARCH_DIRS:
+            p = os.path.join(d, fn)
+            if os.path.isfile(p):
+                return p
+        for d in self._SETTINGS_SEARCH_DIRS:
+            p = os.path.join(d, "WeldDetectoSetup.par")
+            if os.path.isfile(p):
+                return p
+        # default: APP_DIR/WeldDetecto.ini (potrebbe non esistere ancora)
+        return os.path.join(self._SETTINGS_SEARCH_DIRS[0], fn)
+
     def _first_run_settings(self):
-        """Apre il popup impostazioni al primo avvio (file .par non trovato)."""
-        self.app_log(f"File impostazioni non trovato ({self._SETTINGS_FILE}) \u2014 configurazione iniziale", "warn")
-        # Usa una versione del popup che verifica il salvataggio e mostra conferma
+        """Apre il popup impostazioni al primo avvio (file .ini non trovato)."""
+        self.app_log(
+            f"File impostazioni non trovato ({self._settings_file_actual}) — configurazione iniziale",
+            "warn")
         self._open_settings(first_run=True)
 
+    # ----------------------------------------------------------------- carica
     def _load_settings(self) -> dict:
-        import json, os
+        import configparser, json, os
+        self._settings_file_actual = self._find_settings_file()
         s = dict(self._SETTINGS_DEFAULTS)
-        if os.path.isfile(self._SETTINGS_FILE):
+        path = self._settings_file_actual
+        if not os.path.isfile(path):
+            return s
+        # .ini  →  configparser
+        if path.lower().endswith(".ini"):
             try:
-                with open(self._SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                cp = configparser.ConfigParser()
+                cp.read(path, encoding="utf-8")
+                for sect in cp.sections():
+                    for k, v in cp.items(sect):
+                        s[k] = v
+            except Exception as e:
+                try: self.app_log(f"Errore lettura .ini: {e}", "err")
+                except Exception: pass
+        else:
+            # legacy .par  →  JSON
+            try:
+                with open(path, "r", encoding="utf-8") as f:
                     s.update(json.load(f))
-            except Exception: pass
+            except Exception as e:
+                try: self.app_log(f"Errore lettura .par: {e}", "err")
+                except Exception: pass
         return s
 
-    def _save_settings_dict(self, s: dict):
-        import json, os
+    # ------------------------------------------------------------------ salva
+    def _save_settings_dict(self, s: dict, path: str = None):
+        import configparser, os
+        if path is None:
+            path = getattr(self, "_settings_file_actual", None)
+        if path is None or not path.lower().endswith(".ini"):
+            # forza .ini nella prima dir disponibile
+            for d in self._SETTINGS_SEARCH_DIRS:
+                try:
+                    os.makedirs(d, exist_ok=True)
+                    path = os.path.join(d, self._SETTINGS_FILENAME)
+                    break
+                except Exception:
+                    continue
         try:
-            d = os.path.dirname(self._SETTINGS_FILE)
+            d = os.path.dirname(path)
             if d: os.makedirs(d, exist_ok=True)
-            with open(self._SETTINGS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(s, f, indent=2, ensure_ascii=False)
-            return self._SETTINGS_FILE
+            cp = configparser.ConfigParser()
+            cp["PLC"] = {
+                "plc_ip":   s.get("plc_ip",   self._SETTINGS_DEFAULTS["plc_ip"]),
+                "plc_rack": s.get("plc_rack",  self._SETTINGS_DEFAULTS["plc_rack"]),
+                "plc_slot": s.get("plc_slot",  self._SETTINGS_DEFAULTS["plc_slot"]),
+            }
+            cp["Paths"] = {
+                "scl_path":    s.get("scl_path",    ""),
+                "sqlite_path": s.get("sqlite_path",  ""),
+            }
+            cp["Simulator"] = {
+                "autoexp_interval_ms": s.get("autoexp_interval_ms", "100"),
+                "sim_window_default":  s.get("sim_window_default",  "2.8"),
+                "sim_sigma_default":   s.get("sim_sigma_default",   "2.8"),
+                "sim_mabs_default":    s.get("sim_mabs_default",    "0.5"),
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                cp.write(f)
+            self._settings_file_actual = path
+            return path
         except Exception as e:
             try: self.app_log(f"Impostazioni non salvate: {e}", "err")
             except Exception: pass
             return None
 
     def _save_settings(self):
-        path = self._save_settings_dict(self._settings)
-        return path
+        return self._save_settings_dict(self._settings)
 
+    # ---------------------------------------------------------------- popup UI
     def _open_settings(self, first_run=False):
         dlg = tk.Toplevel(self)
         dlg.title("Prima configurazione  --  WeldDetecto v50" if first_run else
                   "Impostazioni  --  WeldDetecto v50")
         dlg.configure(bg=DARK_BG)
-        dlg.geometry("530x470")
+        dlg.geometry("560x580")
         dlg.resizable(False, False)
         dlg.grab_set()
         s = self._settings
@@ -2669,84 +2740,110 @@ class WeldViewerApp(tk.Tk):
         def _row(parent, label, key, width=24, tip=None):
             f = ttk.Frame(parent); f.pack(fill="x", pady=3)
             ttk.Label(f, text=label, style="Muted.TLabel", width=22).pack(side="left")
-            sv = tk.StringVar(value=str(s.get(key, self._SETTINGS_DEFAULTS.get(key, ''))))
+            sv = tk.StringVar(value=str(s.get(key, self._SETTINGS_DEFAULTS.get(key, ""))))
             ttk.Entry(f, textvariable=sv, width=width).pack(side="left", padx=4)
             if tip: ttk.Label(f, text=tip, style="Muted.TLabel",
-                              font=("Consolas",7)).pack(side="left", padx=2)
+                              font=("Consolas", 7)).pack(side="left", padx=2)
             fields[key] = sv; return sv
 
+        # -- PLC
         plc_lf = ttk.LabelFrame(dlg, text="  Connessione PLC  ", padding=10)
         plc_lf.pack(fill="x", padx=14, pady=8)
-        _row(plc_lf, "IP PLC:",    "plc_ip",   tip="es. 172.28.2.1")
+        _row(plc_lf, "IP PLC:", "plc_ip", tip="es. 172.28.2.1")
         r_rs = ttk.Frame(plc_lf); r_rs.pack(fill="x", pady=3)
         ttk.Label(r_rs, text="Rack:", style="Muted.TLabel", width=22).pack(side="left")
-        sv_rack = tk.StringVar(value=s.get("plc_rack","0"))
+        sv_rack = tk.StringVar(value=s.get("plc_rack", "0"))
         ttk.Entry(r_rs, textvariable=sv_rack, width=5).pack(side="left", padx=4)
-        ttk.Label(r_rs, text="Slot:", style="Muted.TLabel").pack(side="left", padx=(12,0))
-        sv_slot = tk.StringVar(value=s.get("plc_slot","1"))
+        ttk.Label(r_rs, text="Slot:", style="Muted.TLabel").pack(side="left", padx=(12, 0))
+        sv_slot = tk.StringVar(value=s.get("plc_slot", "1"))
         ttk.Entry(r_rs, textvariable=sv_slot, width=5).pack(side="left", padx=4)
         fields["plc_rack"] = sv_rack; fields["plc_slot"] = sv_slot
 
+        # -- SCL
         scl_lf = ttk.LabelFrame(dlg, text="  File SCL  ", padding=10)
         scl_lf.pack(fill="x", padx=14, pady=4)
         r_scl = ttk.Frame(scl_lf); r_scl.pack(fill="x")
         ttk.Label(r_scl, text="Percorso SCL:", style="Muted.TLabel", width=22).pack(side="left")
-        sv_scl = tk.StringVar(value=s.get("scl_path",""))
+        sv_scl = tk.StringVar(value=s.get("scl_path", ""))
         ttk.Entry(r_scl, textvariable=sv_scl, width=24).pack(side="left", padx=4)
-        ttk.Button(r_scl, text="...", width=3, command=lambda: sv_scl.set(
-            filedialog.askopenfilename(title="Seleziona SCL",
-                filetypes=[("SCL","*.scl"),("Tutti","*.*")]) or sv_scl.get())
-        ).pack(side="left")
+        ttk.Button(r_scl, text="...", width=3,
+                   command=lambda: sv_scl.set(
+                       filedialog.askopenfilename(
+                           title="Seleziona SCL",
+                           filetypes=[("SCL", "*.scl"), ("Tutti", "*.*")]) or sv_scl.get())
+                   ).pack(side="left")
         fields["scl_path"] = sv_scl
 
+        # -- SQLite
         sql_lf = ttk.LabelFrame(dlg, text="  Database SQLite  ", padding=10)
         sql_lf.pack(fill="x", padx=14, pady=4)
         r_sql = ttk.Frame(sql_lf); r_sql.pack(fill="x")
         ttk.Label(r_sql, text="Percorso SQLite:", style="Muted.TLabel", width=22).pack(side="left")
-        sv_sql = tk.StringVar(value=s.get("sqlite_path",""))
+        sv_sql = tk.StringVar(value=s.get("sqlite_path", ""))
         ttk.Entry(r_sql, textvariable=sv_sql, width=24).pack(side="left", padx=4)
-        ttk.Button(r_sql, text="...", width=3, command=lambda: sv_sql.set(
-            filedialog.askopenfilename(title="Seleziona SQLite",
-                filetypes=[("SQLite","*.sqlite *.db3 *.db"),("Tutti","*.*")]) or sv_sql.get())
-        ).pack(side="left")
+        ttk.Button(r_sql, text="...", width=3,
+                   command=lambda: sv_sql.set(
+                       filedialog.askopenfilename(
+                           title="Seleziona SQLite",
+                           filetypes=[("SQLite", "*.sqlite *.db3 *.db"), ("Tutti", "*.*")]) or sv_sql.get())
+                   ).pack(side="left")
         fields["sqlite_path"] = sv_sql
 
+        # -- File parametri
+        fp_lf = ttk.LabelFrame(dlg, text="  File parametri  ", padding=10)
+        fp_lf.pack(fill="x", padx=14, pady=4)
+        r_fp = ttk.Frame(fp_lf); r_fp.pack(fill="x")
+        sv_fp = tk.StringVar(value=getattr(self, "_settings_file_actual", ""))
+        ttk.Entry(r_fp, textvariable=sv_fp, width=36, state="readonly").pack(side="left", padx=4)
+
+        def _load_from_file():
+            p = filedialog.askopenfilename(
+                title="Carica file parametri",
+                filetypes=[("Parametri", "*.ini *.par"), ("INI", "*.ini"),
+                           ("PAR", "*.par"), ("Tutti", "*.*")])
+            if not p: return
+            self._settings_file_actual = p
+            reloaded = self._load_settings()
+            self._settings.update(reloaded)
+            # aggiorna i campi del dialog
+            for k, sv in fields.items():
+                if k in reloaded:
+                    sv.set(reloaded[k])
+            sv_rack.set(reloaded.get("plc_rack", "0"))
+            sv_slot.set(reloaded.get("plc_slot", "1"))
+            sv_fp.set(p)
+            self.app_log(f"Parametri caricati da: {p}", "ok")
+
+        ttk.Button(r_fp, text="📂 Carica da file…", width=18,
+                   command=_load_from_file).pack(side="left", padx=6)
+
+        # -- Bottoni
         bf = ttk.Frame(dlg); bf.pack(fill="x", padx=14, pady=12)
+
         def _save():
             for k, sv in fields.items(): self._settings[k] = sv.get()
-            for attr, key in [('_pv_plc_ip','plc_ip'),
-                               ('_pv_plc_rack','plc_rack'),('_pv_plc_slot','plc_slot')]:
+            for attr, key in [("_pv_plc_ip", "plc_ip"),
+                               ("_pv_plc_rack", "plc_rack"), ("_pv_plc_slot", "plc_slot")]:
                 sv2 = getattr(self, attr, None)
                 if sv2: sv2.set(self._settings[key])
-            sqp = self._settings.get('sqlite_path','')
+            sqp = self._settings.get("sqlite_path", "")
             if sqp:
-                for attr in ['_pv_sim_src_sql_path','_pv_stat_sql_path',
-                             '_pv_global_sql_path','_pv_sqlqry_path']:
+                for attr in ["_pv_sim_src_sql_path", "_pv_stat_sql_path",
+                             "_pv_global_sql_path", "_pv_sqlqry_path"]:
                     sv2 = getattr(self, attr, None)
                     if sv2: sv2.set(sqp)
             p = self._save_settings()
             if p and os.path.isfile(p):
-                import json
-                try:
-                    with open(p, 'r', encoding='utf-8') as _f:
-                        _loaded = json.load(_f)
-                    self.app_log(f"Impostazioni salvate: {p}", "ok")
-                    self.app_log(f"  IP={_loaded.get('plc_ip')}  DB={_loaded.get('plc_db')}  "
-                                f"SQLite={_loaded.get('sqlite_path') or '(non impostato)'}", "info")
-                except Exception as e:
-                    self.app_log(f"File scritto ma non leggibile: {e}", "err")
-            elif not first_run:
-                pass  # errore gia' loggato in _save_settings_dict
+                self.app_log(f"Impostazioni salvate: {p}", "ok")
             dlg.destroy()
+
         ttk.Button(bf, text="Salva", style="Accent.TButton", width=14,
                    command=_save).pack(side="left", padx=4)
         ttk.Button(bf, text="Default",
-                   command=lambda: [sv.set(self._SETTINGS_DEFAULTS.get(k,''))
-                                   for k, sv in fields.items()]).pack(side="left", padx=4)
+                   command=lambda: [sv.set(self._SETTINGS_DEFAULTS.get(k, ""))
+                                    for k, sv in fields.items()]).pack(side="left", padx=4)
         ttk.Button(bf, text="Annulla",
                    command=dlg.destroy).pack(side="right", padx=4)
-        ttk.Label(dlg, text=f"File: {self._SETTINGS_FILE}",
-                  style="Muted.TLabel", font=("Consolas",7)).pack(pady=(0,6))
 
     def _open_utilities_menu(self):
         """Popup che permette di aprire SQLite Import o SQLite Query in finestra Toplevel."""
