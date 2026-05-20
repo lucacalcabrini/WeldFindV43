@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.33"
+APP_VERSION = "5.0.34"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -1364,6 +1364,8 @@ class WeldViewerApp(tk.Tk):
         # *** v5.0 *** se non esiste il file impostazioni, apri popup al primo avvio
         if not os.path.isfile(self._settings_file_actual):
             self.after(800, self._first_run_settings)
+        # Pulizia file residui aggiornamento precedente (bat + exe _new)
+        self.after(100, self._cleanup_update_leftovers)
         # Controlla aggiornamenti GitHub (non bloccante, timeout 5s)
         self.after(300, self._check_for_updates)
         # Controlla librerie all'avvio (non bloccante)
@@ -1444,6 +1446,28 @@ class WeldViewerApp(tk.Tk):
 
     # ── AUTO-UPDATE ───────────────────────────────────────────
     _GITHUB_REPO = "lucacalcabrini/WeldFindV43"
+
+    def _cleanup_update_leftovers(self):
+        """Elimina bat e exe temporanei lasciati da un aggiornamento precedente."""
+        import glob
+        if not getattr(sys, 'frozen', False):
+            return
+        exe_dir = os.path.dirname(sys.executable)
+        # elimina _weld_update.bat se rimasto
+        bat = os.path.join(exe_dir, "_weld_update.bat")
+        if os.path.isfile(bat):
+            try:
+                os.remove(bat)
+                self.app_log("Rimosso file temporaneo aggiornamento: _weld_update.bat", "info")
+            except Exception:
+                pass
+        # elimina eventuali exe temporanei scaricati (*_new.exe o WeldDetector_v*_new.exe)
+        for tmp in glob.glob(os.path.join(exe_dir, "WeldDetector_v*_new.exe")):
+            try:
+                os.remove(tmp)
+                self.app_log(f"Rimosso exe temporaneo: {os.path.basename(tmp)}", "info")
+            except Exception:
+                pass
 
     def _check_for_updates(self):
         """Avvia controllo aggiornamenti in background (timeout 5s).
@@ -1531,15 +1555,21 @@ class WeldViewerApp(tk.Tk):
             with open(new_exe, "wb") as f:
                 f.write(data)
 
-            # Batch script: aspetta chiusura app, rinomina, riavvia
+            # Batch script: aspetta chiusura app, rinomina, riavvia, auto-elimina
             bat = os.path.join(exe_dir, "_weld_update.bat")
             with open(bat, "w") as f:
                 f.write("@echo off\n")
+                # aspetta che il vecchio exe sia chiuso
                 f.write("timeout /t 2 /nobreak >nul\n")
-                f.write(f'del /f "{exe_path}"\n')
+                # elimina vecchio exe
+                f.write(f'del /f /q "{exe_path}"\n')
+                # rinomina nuovo exe → nome originale
                 f.write(f'ren "{new_exe}" "{exe_name}"\n')
+                # avvia la nuova versione
                 f.write(f'start "" "{exe_path}"\n')
-                f.write('del /f "%~f0"\n')
+                # auto-elimina: lancia un processo separato che cancella
+                # questo bat (%~f0 = percorso completo del bat corrente)
+                f.write('start /b "" cmd /c del /f /q "%~f0"\n')
 
             subprocess.Popen(
                 ["cmd", "/c", bat],
