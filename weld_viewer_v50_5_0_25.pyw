@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.34"
+APP_VERSION = "5.0.35"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -1448,26 +1448,20 @@ class WeldViewerApp(tk.Tk):
     _GITHUB_REPO = "lucacalcabrini/WeldFindV43"
 
     def _cleanup_update_leftovers(self):
-        """Elimina bat e exe temporanei lasciati da un aggiornamento precedente."""
+        """Elimina versioni precedenti dell'exe rimaste nella stessa cartella."""
         import glob
         if not getattr(sys, 'frozen', False):
             return
-        exe_dir = os.path.dirname(sys.executable)
-        # elimina _weld_update.bat se rimasto
-        bat = os.path.join(exe_dir, "_weld_update.bat")
-        if os.path.isfile(bat):
-            try:
-                os.remove(bat)
-                self.app_log("Rimosso file temporaneo aggiornamento: _weld_update.bat", "info")
-            except Exception:
-                pass
-        # elimina eventuali exe temporanei scaricati (*_new.exe o WeldDetector_v*_new.exe)
-        for tmp in glob.glob(os.path.join(exe_dir, "WeldDetector_v*_new.exe")):
-            try:
-                os.remove(tmp)
-                self.app_log(f"Rimosso exe temporaneo: {os.path.basename(tmp)}", "info")
-            except Exception:
-                pass
+        exe_dir  = os.path.dirname(sys.executable)
+        exe_name = os.path.basename(sys.executable)
+        # rimuove tutti i WeldDetector_v*.exe che NON sono l'exe corrente
+        for old in glob.glob(os.path.join(exe_dir, "WeldDetector_v*.exe")):
+            if os.path.basename(old) != exe_name:
+                try:
+                    os.remove(old)
+                    self.app_log(f"Rimossa versione precedente: {os.path.basename(old)}", "info")
+                except Exception:
+                    pass
 
     def _check_for_updates(self):
         """Avvia controllo aggiornamenti in background (timeout 5s).
@@ -1530,54 +1524,44 @@ class WeldViewerApp(tk.Tk):
             ).start()
 
     def _download_and_restart(self, url, filename):
+        """Scarica il nuovo exe con barra % nel titolo, lo lancia, chiude questo.
+        Nessun bat: il nuovo exe cancella da solo il vecchio all'avvio via --replace=."""
         import urllib.request, subprocess
+        if not getattr(sys, 'frozen', False):
+            self.after(0, lambda: messagebox.showinfo(
+                "Info",
+                "Auto-update disponibile solo nell'exe compilato.\n"
+                "Scarica manualmente la nuova versione da GitHub.",
+                parent=self))
+            return
+
+        exe_path = sys.executable
+        exe_dir  = os.path.dirname(exe_path)
+        new_exe  = os.path.join(exe_dir, filename)
+
+        # ── download a chunk, aggiorna titolo con percentuale ──────────────
         try:
-            if not getattr(sys, 'frozen', False):
-                self.after(0, lambda: messagebox.showinfo(
-                    "Info",
-                    "Auto-update disponibile solo nell'exe compilato.\n"
-                    "Scarica manualmente la nuova versione da GitHub.",
-                    parent=self))
-                return
-
-            exe_path = sys.executable
-            exe_dir  = os.path.dirname(exe_path)
-            exe_name = os.path.basename(exe_path)
-            new_exe  = os.path.join(exe_dir, filename)
-
-            self.after(0, lambda: self.title("⬇  Download aggiornamento in corso…"))
-
+            self.after(0, lambda: self.title("⬇  Connessione…"))
             req = urllib.request.Request(
                 url, headers={"User-Agent": "WeldDetector-AutoUpdater"})
             with urllib.request.urlopen(req, timeout=120) as resp:
-                data = resp.read()
-
-            with open(new_exe, "wb") as f:
-                f.write(data)
-
-            # Batch script: aspetta chiusura app, rinomina, riavvia, auto-elimina
-            bat = os.path.join(exe_dir, "_weld_update.bat")
-            with open(bat, "w") as f:
-                f.write("@echo off\n")
-                # aspetta che il vecchio exe sia chiuso
-                f.write("timeout /t 2 /nobreak >nul\n")
-                # elimina vecchio exe
-                f.write(f'del /f /q "{exe_path}"\n')
-                # rinomina nuovo exe → nome originale
-                f.write(f'ren "{new_exe}" "{exe_name}"\n')
-                # avvia la nuova versione
-                f.write(f'start "" "{exe_path}"\n')
-                # auto-elimina: lancia un processo separato che cancella
-                # questo bat (%~f0 = percorso completo del bat corrente)
-                f.write('start /b "" cmd /c del /f /q "%~f0"\n')
-
-            subprocess.Popen(
-                ["cmd", "/c", bat],
-                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
-            )
-            self.after(0, self.destroy)
-
+                total = int(resp.headers.get("Content-Length") or 0)
+                done  = 0
+                with open(new_exe, "wb") as f:
+                    while True:
+                        chunk = resp.read(65536)   # 64 KB alla volta
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        if total:
+                            pct = done * 100 // total
+                            self.after(0, lambda p=pct:
+                                self.title(f"⬇  Download {p}%…"))
         except Exception as e:
+            if os.path.isfile(new_exe):
+                try: os.remove(new_exe)
+                except Exception: pass
             self.after(0, lambda err=str(e): messagebox.showerror(
                 "Errore aggiornamento",
                 f"Download fallito:\n{err}\n\n"
@@ -1586,6 +1570,25 @@ class WeldViewerApp(tk.Tk):
                 parent=self))
             self.after(0, lambda: self.title(
                 f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
+            return
+
+        # ── lancia il nuovo exe passando il percorso del vecchio ────────────
+        # Il nuovo exe all'avvio vede --replace=<path> e cancella il vecchio
+        try:
+            subprocess.Popen(
+                [new_exe, f"--replace={exe_path}"],
+                creationflags=subprocess.DETACHED_PROCESS
+                              | subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+            self.after(0, self.destroy)
+        except Exception as e:
+            if os.path.isfile(new_exe):
+                try: os.remove(new_exe)
+                except Exception: pass
+            self.after(0, lambda err=str(e): messagebox.showerror(
+                "Errore aggiornamento",
+                f"Impossibile avviare la nuova versione:\n{err}",
+                parent=self))
 
     # ── STYLE ─────────────────────────────────────────────────
     def _style(self):
@@ -8438,6 +8441,24 @@ class WeldViewerApp(tk.Tk):
 # ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+
+    # ── Gestione --replace=<vecchio_exe> (passato dalla versione precedente) ──
+    # Il vecchio exe è già chiuso: aspettiamo 2s in background poi lo cancelliamo
+    _old_exe_to_delete = None
+    for _arg in sys.argv[1:]:
+        if _arg.startswith("--replace="):
+            _old_exe_to_delete = _arg[len("--replace="):]
+            break
+    if _old_exe_to_delete:
+        import threading, time as _time
+        def _delete_old(p=_old_exe_to_delete):
+            _time.sleep(2)
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+        threading.Thread(target=_delete_old, daemon=True).start()
+
     app = WeldViewerApp()
     app.mainloop()
     def _autoexp_on_trigger(self, row_idx: int, db_num: int):
