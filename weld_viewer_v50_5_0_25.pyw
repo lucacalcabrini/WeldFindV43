@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.36"
+APP_VERSION = "5.0.37"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -539,7 +539,6 @@ def simulate_plc_realtime(
         buf_tl[cur] = th_lo
         buf_th_neg[cur] = th_hi_neg
         buf_tl_neg[cur] = th_lo_neg
-        buf_tl_neg[cur] = th_lo_neg
 
         # ── Cluster online ─────────────────────────────────────
         dev = las - m
@@ -691,12 +690,8 @@ def simulate_plc_realtime(
 
     detection_delay = (detection_sample - detection_cluster_start) if detection_sample >= 0 else -1
 
-    # Rolling SNR: per ogni campione, rapporto |dev| / sigma locale
-    rolling_snr = np.zeros(n_acq)
-    for ri in range(n_acq):
-        sg_loc = buf_sg[ri]
-        dev_loc = abs(buf_s[ri] - buf_m[ri])
-        rolling_snr[ri] = dev_loc / (sg_loc + 1e-9)
+    # Rolling SNR: vettorizzato numpy (eliminato loop Python)
+    rolling_snr = np.abs(buf_s[:n_acq] - buf_m[:n_acq]) / (buf_sg[:n_acq] + 1e-9)
 
     return {
         "filt_samples":   buf_s[:n_acq].copy(),
