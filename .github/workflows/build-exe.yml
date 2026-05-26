@@ -51,17 +51,27 @@ jobs:
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "WeldDetector v${{ steps.version.outputs.ver }}"
-          files: dist/WeldDetector_v${{ steps.version.outputs.ver }}.exe
-          generate_release_notes: false
-          body: |
-            ## WeldDetector v${{ steps.version.outputs.ver }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ver = "${{ steps.version.outputs.ver }}"
+          $tag = "${{ github.ref_name }}"
+          $exe = "dist/WeldDetector_v$ver.exe"
+          $notes = @"
+          ## WeldDetector v$ver
 
-            ### Installazione
-            Scarica `WeldDetector_v${{ steps.version.outputs.ver }}.exe` e avvialo direttamente.
-            Non richiede installazione di Python o librerie aggiuntive.
+          ### Installazione
+          Scarica ``WeldDetector_v$ver.exe`` e avvialo direttamente.
+          Non richiede installazione di Python o librerie aggiuntive.
 
-            ### Note
-            Il file `WeldDetecto.ini` viene creato automaticamente in `C:\ProgramData\WeldDetecto\` al primo avvio.
+          ### Note
+          Il file ``WeldDetecto.ini`` viene creato automaticamente in ``C:\ProgramData\WeldDetecto\`` al primo avvio.
+          "@
+          $notesFile = "release_notes.md"
+          Set-Content -Path $notesFile -Value $notes -Encoding utf8
+          if (gh release view $tag 2>$null) {
+            gh release upload $tag $exe --clobber
+            gh release edit $tag --title "WeldDetector v$ver" --notes-file $notesFile
+          } else {
+            gh release create $tag $exe --title "WeldDetector v$ver" --notes-file $notesFile
+          }
