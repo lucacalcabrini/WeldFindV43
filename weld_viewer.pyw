@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.38"
+APP_VERSION = "5.0.39"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -2767,7 +2767,8 @@ class WeldViewerApp(tk.Tk):
             for k, sv in fields.items(): self._settings[k] = sv.get()
             for attr, key in [("_pv_plc_ip", "plc_ip"),
                                ("_pv_plc_rack", "plc_rack"),
-                               ("_pv_plc_slot", "plc_slot")]:
+                               ("_pv_plc_slot", "plc_slot"),
+                               ("_pv_autoexp_ip_label", "plc_ip")]:
                 sv2 = getattr(self, attr, None)
                 if sv2: sv2.set(self._settings[key])
             sqp = self._settings.get("sqlite_path", "")
@@ -4432,6 +4433,16 @@ class WeldViewerApp(tk.Tk):
         ttk.Entry(ae_r2, textvariable=self._pv_autoexp_poll, width=6).pack(side="left", padx=2)
         ttk.Label(ae_r2, text="ms", style="Muted.TLabel").pack(side="left")
 
+        ae_r3 = ttk.Frame(ae_frm); ae_r3.pack(fill="x", pady=2)
+        ttk.Label(ae_r3, text="IP PLC:", style="Muted.TLabel").pack(side="left")
+        self._pv_autoexp_ip_label = tk.StringVar(
+            value=self._settings.get("plc_ip", self._SETTINGS_DEFAULTS["plc_ip"]))
+        ttk.Label(ae_r3, textvariable=self._pv_autoexp_ip_label,
+                  font=("Consolas", 9), background=DARK_BG,
+                  foreground=CIAN_CLR).pack(side="left", padx=6)
+        ttk.Label(ae_r3, text="(da Impostazioni)",
+                  style="Muted.TLabel", font=("Consolas", 7)).pack(side="left")
+
         # ── Tabella 10 DB ─────────────────────────────────────────
         db_lf = ttk.LabelFrame(left, text="  DB da monitorare (max 10)  ", padding=6)
         db_lf.pack(fill="x", padx=6, pady=4)
@@ -4912,9 +4923,15 @@ class WeldViewerApp(tk.Tk):
         if not SNAP7_AVAILABLE:
             self._plc_log_msg("\n\u2717 python-snap7 non installato!\n", "err"); return
 
-        ip   = self._settings.get("plc_ip", self._SETTINGS_DEFAULTS["plc_ip"]).strip()
-        rack = int(self._settings.get("plc_rack", self._SETTINGS_DEFAULTS["plc_rack"]))
-        slot = int(self._settings.get("plc_slot", self._SETTINGS_DEFAULTS["plc_slot"]))
+        # Rilegge sempre l'INI per avere l'IP aggiornato (indipendente dalla cache)
+        _fresh = self._load_settings()
+        for _k in ("plc_ip", "plc_rack", "plc_slot"):
+            self._settings[_k] = _fresh.get(_k, self._SETTINGS_DEFAULTS[_k])
+        if hasattr(self, "_pv_autoexp_ip_label"):
+            self._pv_autoexp_ip_label.set(self._settings["plc_ip"])
+        ip   = self._settings["plc_ip"].strip()
+        rack = int(self._settings["plc_rack"])
+        slot = int(self._settings["plc_slot"])
 
         export_dir = ""
         reject_dir = ""
