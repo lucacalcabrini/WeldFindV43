@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.39"
+APP_VERSION = "5.0.40"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -5012,6 +5012,11 @@ class WeldViewerApp(tk.Tk):
         self._autoexp_poll_size   = poll_size
         self._autoexp_poll_trigger_rel = trig_rel
 
+        # Parametri di connessione salvati per la riconnessione automatica
+        self._autoexp_conn = (ip, rack, slot)
+        self._autoexp_comm_lost = False
+        self._autoexp_reconnect_attempts = 0
+
         self._autoexp_export_count = 0
         self._autoexp_reject_count = 0
         self._autoexp_error_count  = 0
@@ -5037,6 +5042,7 @@ class WeldViewerApp(tk.Tk):
     def _autoexp_stop(self):
         """Ferma il monitoraggio e disconnetti."""
         self._autoexp_running = False
+        self._autoexp_comm_lost = False
         if getattr(self, "_autoexp_timer_id", None):
             self.after_cancel(self._autoexp_timer_id)
             self._autoexp_timer_id = None
@@ -5062,6 +5068,44 @@ class WeldViewerApp(tk.Tk):
         self.app_log(f"Auto Export fermato. Buoni: {n} | Scarti: {r}", "warn")
 
 
+    def _autoexp_conn_ok(self):
+        """True se il client snap7 è connesso e operativo."""
+        c = getattr(self, "_autoexp_client", None)
+        if c is None:
+            return False
+        try:
+            return bool(c.get_connected())
+        except Exception:
+            return False
+
+    def _autoexp_try_reconnect(self):
+        """Tenta di ripristinare la connessione PLC persa. Ritorna True se riuscito."""
+        self._autoexp_reconnect_attempts += 1
+        n = self._autoexp_reconnect_attempts
+        ip, rack, slot = getattr(self, "_autoexp_conn", ("", 0, 1))
+        # Chiudi il vecchio client morto
+        if self._autoexp_client is not None:
+            try: self._autoexp_client.disconnect()
+            except Exception: pass
+            try: self._autoexp_client.destroy()
+            except Exception: pass
+            self._autoexp_client = None
+        try:
+            self._autoexp_client = snap7.client.Client()
+            self._autoexp_client.connect(ip, rack, slot)
+            if self._autoexp_client.get_connected():
+                self._autoexp_comm_lost = False
+                self._autoexp_reconnect_attempts = 0
+                self._plc_log_msg(f"✓ Riconnesso a {ip}\n", "ok")
+                self._pv_autoexp_status.set("● Riconnesso")
+                self._update_conn_indicator("autoexp")
+                return True
+        except Exception as e:
+            if n <= 3 or n % 10 == 0:
+                self._plc_log_msg(f"↺ Riconnessione #{n} fallita: {e}\n", "warn")
+        self._autoexp_client = None
+        return False
+
     def _autoexp_decode_trigger_rel(self, raw_chunk):
         """Decodifica valore trigger dal chunk letto a poll_start."""
         rel = self._autoexp_poll_trigger_rel
@@ -5074,8 +5118,18 @@ class WeldViewerApp(tk.Tk):
         """Ciclo di polling multi-DB: controlla trigger per ogni DB attivo.
         La selezione dei DB viene riletta ad ogni ciclo (real-time).
         """
-        if not self._autoexp_running or not self._autoexp_client:
+        if not self._autoexp_running:
             return
+
+        # ── Riconnessione automatica se la comunicazione è caduta ──
+        if self._autoexp_comm_lost or self._autoexp_client is None:
+            ok = self._autoexp_try_reconnect()
+            if self._autoexp_running:
+                # ritenta a cadenza lenta finché non torna la comunicazione
+                delay = self._autoexp_poll_ms if ok else 2000
+                self._autoexp_timer_id = self.after(delay, self._autoexp_poll)
+            return
+
         try:
             ps = self._autoexp_poll_start
             pz = self._autoexp_poll_size
@@ -5147,20 +5201,36 @@ class WeldViewerApp(tk.Tk):
                         self._autoexp_on_trigger_db(db_info)
 
                 except Exception as e:
+                    # Comunicazione persa? \u2192 marca per riconnessione ed esci dal loop
+                    if not self._autoexp_conn_ok():
+                        self._autoexp_comm_lost = True
+                        self._plc_log_msg(
+                            "\u26a0 Comunicazione persa \u2014 riconnessione automatica in corso...\n", "warn")
+                        self._pv_autoexp_status.set("\u26a0 Comm persa \u2014 riconnetto...")
+                        self._update_conn_indicator(None)
+                        break
                     self._plc_log_msg(f"\u2717 Errore poll DB{db_num}: {e}\n", "err")
 
-            n_db = sum(1 for d in self._ae_active_dbs if d["row"]["en"].get())
-            self._pv_autoexp_status.set(
-                f"\u25cf Attivo — {n_db} DB  "
-                f"\u2713{self._autoexp_export_count} \u2717{self._autoexp_reject_count}")
+            # Non sovrascrivere lo stato se la comunicazione e' appena caduta
+            if not self._autoexp_comm_lost:
+                n_db = sum(1 for d in self._ae_active_dbs if d["row"]["en"].get())
+                self._pv_autoexp_status.set(
+                    f"\u25cf Attivo — {n_db} DB  "
+                    f"\u2713{self._autoexp_export_count} \u2717{self._autoexp_reject_count}")
 
         except Exception as e:
-            self._autoexp_error_count = getattr(self, '_autoexp_error_count', 0) + 1
-            if self._autoexp_error_count <= 3 or self._autoexp_error_count % 20 == 0:
-                self._plc_log_msg(f"\u2717 Errore polling #{self._autoexp_error_count}: {e}\n", "err")
-            if self._autoexp_error_count >= 50:
-                self._plc_log_msg("\u2717 Troppi errori, monitoraggio fermato.\n", "err")
-                self._autoexp_stop(); return
+            # Errore globale: se la connessione e' caduta -> riconnetti, NON fermare
+            if not self._autoexp_conn_ok():
+                if not self._autoexp_comm_lost:
+                    self._autoexp_comm_lost = True
+                    self._plc_log_msg(
+                        "\u26a0 Comunicazione persa \u2014 riconnessione automatica in corso...\n", "warn")
+                    self._pv_autoexp_status.set("\u26a0 Comm persa \u2014 riconnetto...")
+                    self._update_conn_indicator(None)
+            else:
+                self._autoexp_error_count = getattr(self, '_autoexp_error_count', 0) + 1
+                if self._autoexp_error_count <= 3 or self._autoexp_error_count % 20 == 0:
+                    self._plc_log_msg(f"\u2717 Errore polling #{self._autoexp_error_count}: {e}\n", "err")
 
         if self._autoexp_running:
             self._autoexp_timer_id = self.after(self._autoexp_poll_ms, self._autoexp_poll)
