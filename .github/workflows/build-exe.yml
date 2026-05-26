@@ -32,7 +32,7 @@ jobs:
       - name: Read version from source
         id: version
         run: |
-          $ver = (Select-String -Path "weld_viewer_v50_5_0_38.pyw" -Pattern 'APP_VERSION\s*=\s*"(.+)"').Matches.Groups[1].Value
+          $ver = (Select-String -Path "weld_viewer.pyw" -Pattern 'APP_VERSION\s*=\s*"(.+)"').Matches.Groups[1].Value
           echo "ver=$ver" >> $env:GITHUB_OUTPUT
           echo "Version: $ver"
 
@@ -41,7 +41,7 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --icon=icon.ico --name "WeldDetector_v${{ steps.version.outputs.ver }}" weld_viewer_v50_5_0_38.pyw
+          pyinstaller --onefile --windowed --icon=icon.ico --name "WeldDetector_v${{ steps.version.outputs.ver }}" weld_viewer.pyw
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

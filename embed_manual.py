@@ -5,7 +5,7 @@ Usato dal workflow GitHub Actions prima di compilare l'exe.
 import base64, re, sys
 from pathlib import Path
 
-PYW = Path("weld_viewer_v50_5_0_38.pyw")
+PYW = Path("weld_viewer.pyw")
 HTML = Path("manual.html")
 
 html_b64 = base64.b64encode(HTML.read_bytes()).decode("ascii")
