@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.37"
+APP_VERSION = "5.0.38"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -4324,7 +4324,7 @@ class WeldViewerApp(tk.Tk):
         frm.pack(fill="x", padx=6, pady=6)
         row1 = ttk.Frame(frm);  row1.pack(fill="x", pady=2)
         for label, attr, default, w in [
-            ("IP:",   "plc_ip",   "172.28.2.1",   18),
+            ("IP:",   "plc_ip",   self._settings.get("plc_ip", "172.28.2.1"),   18),
             ("DB:",   "plc_db",   "28160",          7),
         ]:
             ttk.Label(row1, text=label).pack(side="left", padx=(4, 0))
@@ -4912,9 +4912,9 @@ class WeldViewerApp(tk.Tk):
         if not SNAP7_AVAILABLE:
             self._plc_log_msg("\n\u2717 python-snap7 non installato!\n", "err"); return
 
-        ip   = self._pv_plc_ip.get().strip()
-        rack = int(self._pv_plc_rack.get())
-        slot = int(self._pv_plc_slot.get())
+        ip   = self._settings.get("plc_ip", self._SETTINGS_DEFAULTS["plc_ip"]).strip()
+        rack = int(self._settings.get("plc_rack", self._SETTINGS_DEFAULTS["plc_rack"]))
+        slot = int(self._settings.get("plc_slot", self._SETTINGS_DEFAULTS["plc_slot"]))
 
         export_dir = ""
         reject_dir = ""
@@ -7191,7 +7191,7 @@ class WeldViewerApp(tk.Tk):
         self._stat_disc_label = _dl
 
         # Tabella top risultati
-        tbl_lf = ttk.LabelFrame(right, text="  Risultati (% trovati ↓, SNR med ↓)  ", padding=4)
+        tbl_lf = ttk.LabelFrame(right, text="  Risultati (score: pct + SNR + SigmaF + MinAbs + Window°)  ", padding=4)
         tbl_lf.pack(fill="x", padx=6, pady=2)
         tbl_sh = ttk.Scrollbar(tbl_lf, orient="horizontal"); tbl_sh.pack(side="bottom", fill="x")
         tbl_sv = ttk.Scrollbar(tbl_lf);                       tbl_sv.pack(side="right",  fill="y")
@@ -7925,17 +7925,20 @@ class WeldViewerApp(tk.Tk):
         snr_mins  = np.full(n_combos, np.inf)
         sig_facts = np.zeros(n_combos)  # sigma_factor per combo
         min_abss  = np.zeros(n_combos)  # min_abs_dev per combo
+        win_degs  = np.zeros(n_combos)  # window_deg per combo
         # Indici delle chiavi di scoring nelle combo
         _keys = self._stat_keys
-        _sf_i = _keys.index('sigma_factor')   if 'sigma_factor' in _keys else -1
-        _ma_i = _keys.index('min_abs_dev')     if 'min_abs_dev'  in _keys else -1
+        _sf_i = _keys.index('sigma_factor') if 'sigma_factor' in _keys else -1
+        _ma_i = _keys.index('min_abs_dev')  if 'min_abs_dev'  in _keys else -1
+        _wd_i = _keys.index('window_deg')   if 'window_deg'   in _keys else -1
         # Valori fissi (se non in sweep)
         def _fix(key, default):
             try: return float(self._stat_swp.get(key, {}).get('fix').get())
             except Exception: return default
         _sf_fix = _fix('sigma_factor', 3.0) if _sf_i < 0 else 0.0
         _ma_fix = _fix('min_abs_dev',  1.5) if _ma_i < 0 else 0.0
-        best_score = (-1.0,) * 4; best_ci = 0
+        _wd_fix = _fix('window_deg',   2.0) if _wd_i < 0 else 0.0
+        best_score = -1.0; best_ci = 0
         best_pct = -1.0; best_snr_med = 0.0; best_snr_min = 0.0
 
         for ci in range(n_combos):
@@ -7954,8 +7957,9 @@ class WeldViewerApp(tk.Tk):
             cmb = self._stat_combos[ci]
             sig_facts[ci] = float(cmb[_sf_i]) if _sf_i >= 0 else _sf_fix
             min_abss[ci]  = float(cmb[_ma_i]) if _ma_i >= 0 else _ma_fix
-            # Criteri: pct desc, snr_med desc, sigma_factor desc, min_abs_dev desc
-            score = (pct, snr_meds[ci], sig_facts[ci], min_abss[ci])
+            win_degs[ci]  = float(cmb[_wd_i]) if _wd_i >= 0 else _wd_fix
+            # Score: somma pct + snr_med + sigma_factor + min_abs_dev + window_deg (tutti desc)
+            score = pct + snr_meds[ci] + sig_facts[ci] + min_abss[ci] + win_degs[ci]
             if score > best_score:
                 best_score = score; best_ci = ci
                 best_pct = pct
@@ -8009,11 +8013,11 @@ class WeldViewerApp(tk.Tk):
         self._stat_last_best = {"params": params, "pct": best_pct,
                                  "snr_med": best_snr_med, "snr_min": best_snr_min}
 
-        # Ordinati: % trovati desc, SNR med desc, sigma_factor desc, min_abs_dev desc
+        # Ordinati: score composito desc (pct + snr_med + sigma_factor + min_abs_dev + window_deg)
         ranked = sorted(
-            [(ci, pcts[ci], snr_meds[ci], snr_mins[ci], sig_facts[ci], min_abss[ci])
+            [(ci, pcts[ci], snr_meds[ci], snr_mins[ci], sig_facts[ci], min_abss[ci], win_degs[ci])
              for ci in range(n_combos) if pcts[ci] > 0],
-            key=lambda x: (x[1], x[2], x[4], x[5]), reverse=True)
+            key=lambda x: x[1] + x[2] + x[4] + x[5] + x[6], reverse=True)
 
         cols = self._stat_keys + ["% trovati", "SNR med.", "SNR min.", "SigmaF", "MinAbs"]
         self._stat_tree.config(columns=cols)
@@ -8023,7 +8027,7 @@ class WeldViewerApp(tk.Tk):
             self._stat_tree.column(c, width=w, anchor="center")
         for row in self._stat_tree.get_children():
             self._stat_tree.delete(row)
-        for ri, (ci, pct, snrm, snrn, sf, ma) in enumerate(ranked):
+        for ri, (ci, pct, snrm, snrn, sf, ma, wd) in enumerate(ranked):
             cmb  = self._stat_combos[ci]
             vals = []
             for k, v in zip(self._stat_keys, cmb):
