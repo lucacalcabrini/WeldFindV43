@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.41"
+APP_VERSION = "5.0.42"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -141,7 +141,39 @@ import itertools
 import matplotlib.colors as mcolors
 from matplotlib.figure import Figure
 from matplotlib.widgets import Cursor
+from matplotlib.ticker import Locator, AutoLocator
 import numpy as np
+
+
+class SafeMultipleLocator(Locator):
+    """Posiziona i tick a multipli di `base` (passo griglia fisso) ma, se il
+    passo richiesto generasse troppi tick per il range corrente, lo ingrandisce
+    automaticamente a un multiplo intero per restare leggibile (no crash MAXTICKS)."""
+    def __init__(self, base, max_ticks=500):
+        self._base = float(base)
+        self._max_ticks = int(max_ticks)
+
+    def set_params(self, **kw):
+        if "base" in kw:
+            self._base = float(kw["base"])
+
+    def __call__(self):
+        vmin, vmax = self.axis.get_view_interval()
+        return self.tick_values(vmin, vmax)
+
+    def tick_values(self, vmin, vmax):
+        if vmin > vmax:
+            vmin, vmax = vmax, vmin
+        base = self._base
+        span = vmax - vmin
+        if base <= 0 or not np.isfinite(span) or span <= 0:
+            return np.array([vmin])
+        n = span / base
+        if n > self._max_ticks:
+            base *= int(np.ceil(n / self._max_ticks))
+        lo = np.floor(vmin / base) * base
+        ticks = np.arange(lo, vmax + base * 0.5, base)
+        return self.raise_if_exceeds(ticks)
 
 # ── SNAP7 (opzionale, per lettura diretta da PLC) ──────────
 SNAP7_AVAILABLE = False
@@ -2023,6 +2055,7 @@ class WeldViewerApp(tk.Tk):
         self._build_left(left_a)
         right_a = ttk.Frame(analisi_pane)
         analisi_pane.add(right_a, weight=1)
+        self._build_grid_bar(right_a, "an").pack(side="top", fill="x", pady=(2, 0))
         sub_nb = ttk.Notebook(right_a)
         sub_nb.pack(fill="both", expand=True)
         self._sub_nb = sub_nb
@@ -2119,6 +2152,24 @@ class WeldViewerApp(tk.Tk):
         sim_frame = ttk.Frame(nb)
         nb.add(sim_frame, text="  ▶  Simulatore PLC  ")
         self._build_sim_tab(sim_frame)
+
+        # ── Registra assi/canvas per la risoluzione griglia (Analisi + Simulatore) ──
+        self._grid_axes_an = {
+            self.ax1a, self.ax1b, self.ax3a, self.ax3b,
+            self.ax4a, self.ax4b, self.ax4c,
+            self.ax5_main, self.ax5_top, self.ax5_right,
+        }
+        self._grid_canvases_an = [self.canvas1, self.canvas3, self.canvas4, self.canvas5]
+        self._grid_axes_sim = {
+            self.ax_sa1, self.ax_sa2, self.ax_sb1, self.ax_sb2,
+            self.ax_sd1, self.ax_sd2, self.ax_se1, self.ax_se2, self.ax_se3,
+            self.ax_sf1, self.ax_sf2, self.ax_sf3, self.ax_sg1, self.ax_sg2,
+            self.ax_sh1, self.ax_sh2, self.ax_si1, self.ax_si2,
+        }
+        self._grid_canvases_sim = [
+            self.canvas_sa, self.canvas_sb, self.canvas_sd, self.canvas_se,
+            self.canvas_sf, self.canvas_sg, self.canvas_sh, self.canvas_si,
+        ]
 
         # ══════════════════════════════════════════════════════
         #  TAB 3: 🔌 PLC READER
@@ -2435,6 +2486,7 @@ class WeldViewerApp(tk.Tk):
         self._sim_outer_nb = None  # mantenuto per compat. interna
         rf2 = rf
 
+        self._build_grid_bar(rf2, "sim").pack(side="top", fill="x", pady=(2, 0))
         sim_nb = ttk.Notebook(rf2);  sim_nb.pack(fill="both", expand=True);  self.sim_nb = sim_nb
         self._sim_dirty    = set()
         self._sim_draw_map = []
@@ -2636,6 +2688,71 @@ class WeldViewerApp(tk.Tk):
         for spine in ax.spines.values():
             spine.set_edgecolor(BORDER_CLR)
         ax.grid(True, color=BORDER_CLR, linewidth=0.5, alpha=0.7)
+        self._apply_ax_grid(ax)
+
+    # ── Risoluzione griglia assi (passo X / Y configurabile dall'utente) ──
+    @staticmethod
+    def _grid_step_val(var):
+        """Ritorna il passo (float > 0) dalla StringVar, oppure None (= auto)."""
+        if var is None:
+            return None
+        try:
+            s = var.get().strip().replace(",", ".")
+        except Exception:
+            return None
+        if not s:
+            return None
+        try:
+            v = float(s)
+            return v if v > 0 else None
+        except ValueError:
+            return None
+
+    def _set_ax_grid(self, ax, grp):
+        """Applica i locator di X/Y all'asse `ax` secondo il gruppo ('an'/'sim')."""
+        xstep = self._grid_step_val(getattr(self, f"_pv_grid_x_{grp}", None))
+        ystep = self._grid_step_val(getattr(self, f"_pv_grid_y_{grp}", None))
+        ax.xaxis.set_major_locator(SafeMultipleLocator(xstep) if xstep else AutoLocator())
+        ax.yaxis.set_major_locator(SafeMultipleLocator(ystep) if ystep else AutoLocator())
+
+    def _apply_ax_grid(self, ax):
+        """Se l'asse appartiene a un gruppo con risoluzione griglia, applicala."""
+        if ax in getattr(self, "_grid_axes_an", ()):
+            self._set_ax_grid(ax, "an")
+        elif ax in getattr(self, "_grid_axes_sim", ()):
+            self._set_ax_grid(ax, "sim")
+
+    def _apply_grid_group(self, grp):
+        """Riapplica la risoluzione a tutti gli assi del gruppo e ridisegna
+        (immediato, senza ricalcolo: gli assi sono gia' plottati)."""
+        for ax in getattr(self, f"_grid_axes_{grp}", ()):
+            self._set_ax_grid(ax, grp)
+        for c in getattr(self, f"_grid_canvases_{grp}", ()):
+            try:
+                c.draw_idle()
+            except Exception:
+                pass
+
+    def _build_grid_bar(self, parent, grp):
+        """Barra 'Griglia X / Y' sopra i grafici. Crea le StringVar _pv_grid_*_<grp>."""
+        setattr(self, f"_pv_grid_x_{grp}", tk.StringVar(value=""))
+        setattr(self, f"_pv_grid_y_{grp}", tk.StringVar(value=""))
+        xv = getattr(self, f"_pv_grid_x_{grp}")
+        yv = getattr(self, f"_pv_grid_y_{grp}")
+        bar = ttk.Frame(parent)
+        ttk.Label(bar, text="Griglia  X:", style="Muted.TLabel").pack(side="left", padx=(6, 2))
+        ex = ttk.Entry(bar, textvariable=xv, width=7)
+        ex.pack(side="left")
+        ttk.Label(bar, text="Y:", style="Muted.TLabel").pack(side="left", padx=(8, 2))
+        ey = ttk.Entry(bar, textvariable=yv, width=7)
+        ey.pack(side="left")
+        ttk.Button(bar, text="Applica", width=8,
+                   command=lambda g=grp: self._apply_grid_group(g)).pack(side="left", padx=6)
+        ttk.Label(bar, text="(passo tacche, vuoto = automatico)",
+                  style="Muted.TLabel", font=("Consolas", 8)).pack(side="left")
+        ex.bind("<Return>", lambda e, g=grp: self._apply_grid_group(g))
+        ey.bind("<Return>", lambda e, g=grp: self._apply_grid_group(g))
+        return bar
 
     def _style_polar(self, ax):
         ax.set_facecolor(PANEL_BG)
