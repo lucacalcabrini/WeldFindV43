@@ -41,13 +41,13 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --icon=icon.ico --name "WeldDetector_v${{ steps.version.outputs.ver }}" weld_viewer.pyw
+          pyinstaller --onefile --windowed --icon=icon.ico --name "WeldDetector" weld_viewer.pyw
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: WeldDetector-v${{ steps.version.outputs.ver }}-Windows
-          path: dist/WeldDetector_v${{ steps.version.outputs.ver }}.exe
+          path: dist/WeldDetector.exe
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -56,12 +56,12 @@ jobs:
         run: |
           $ver = "${{ steps.version.outputs.ver }}"
           $tag = "${{ github.ref_name }}"
-          $exe = "dist/WeldDetector_v$ver.exe"
+          $exe = "dist/WeldDetector.exe"
           $notes = @"
           ## WeldDetector v$ver
 
           ### Installazione
-          Scarica ``WeldDetector_v$ver.exe`` e avvialo direttamente.
+          Scarica ``WeldDetector.exe`` e avvialo direttamente.
           Non richiede installazione di Python o librerie aggiuntive.
 
           ### Note

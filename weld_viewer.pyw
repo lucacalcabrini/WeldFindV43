@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.40"
+APP_VERSION = "5.0.41"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -1443,20 +1443,21 @@ class WeldViewerApp(tk.Tk):
     _GITHUB_REPO = "lucacalcabrini/WeldFindV43"
 
     def _cleanup_update_leftovers(self):
-        """Elimina versioni precedenti dell'exe rimaste nella stessa cartella."""
+        """Elimina versioni precedenti e file temporanei dell'exe nella cartella."""
         import glob
         if not getattr(sys, 'frozen', False):
             return
         exe_dir  = os.path.dirname(sys.executable)
         exe_name = os.path.basename(sys.executable)
-        # rimuove tutti i WeldDetector_v*.exe che NON sono l'exe corrente
-        for old in glob.glob(os.path.join(exe_dir, "WeldDetector_v*.exe")):
-            if os.path.basename(old) != exe_name:
-                try:
-                    os.remove(old)
-                    self.app_log(f"Rimossa versione precedente: {os.path.basename(old)}", "info")
-                except Exception:
-                    pass
+        # vecchio schema con versione nel nome + temporanei dello swap auto-update
+        for pat in ("WeldDetector_v*.exe", "*.old.exe", "*.new.exe"):
+            for old in glob.glob(os.path.join(exe_dir, pat)):
+                if os.path.basename(old) != exe_name:
+                    try:
+                        os.remove(old)
+                        self.app_log(f"Rimossa versione precedente: {os.path.basename(old)}", "info")
+                    except Exception:
+                        pass
 
     def _check_for_updates(self):
         """Avvia controllo aggiornamenti in background (timeout 5s).
@@ -1532,7 +1533,13 @@ class WeldViewerApp(tk.Tk):
 
         exe_path = sys.executable
         exe_dir  = os.path.dirname(exe_path)
-        new_exe  = os.path.join(exe_dir, filename)
+        exe_base = os.path.basename(exe_path)
+        stem, ext = os.path.splitext(exe_base)
+        # Scarica sempre su un file temporaneo distinto: il nuovo exe puo' avere
+        # lo STESSO nome di quello in esecuzione (nome fisso WeldDetector.exe) e
+        # Windows non permette di sovrascrivere un eseguibile in uso.
+        new_exe  = os.path.join(exe_dir, f"{stem}.new{ext}")
+        old_exe  = os.path.join(exe_dir, f"{stem}.old{ext}")
 
         # ── download a chunk, aggiorna titolo con percentuale ──────────────
         try:
@@ -1567,19 +1574,40 @@ class WeldViewerApp(tk.Tk):
                 f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
             return
 
-        # ── lancia il nuovo exe passando il percorso del vecchio ────────────
-        # Il nuovo exe all'avvio vede --replace=<path> e cancella il vecchio
+        # ── swap dei file: Windows consente di RINOMINARE un exe in esecuzione ──
+        # 1) sposta il vecchio (in uso) -> .old.exe   2) il nuovo -> nome definitivo
+        # 3) lancia il nuovo passando --replace=<.old.exe> che lo cancellera'
+        try:
+            if os.path.exists(old_exe):
+                try: os.remove(old_exe)
+                except Exception: pass
+            os.rename(exe_path, old_exe)   # WeldDetector.exe   -> WeldDetector.old.exe
+            os.rename(new_exe, exe_path)   # WeldDetector.new.exe -> WeldDetector.exe
+        except Exception as e:
+            # rollback: ripristina il nome originale se lo swap e' fallito a meta'
+            if not os.path.exists(exe_path) and os.path.exists(old_exe):
+                try: os.rename(old_exe, exe_path)
+                except Exception: pass
+            if os.path.isfile(new_exe):
+                try: os.remove(new_exe)
+                except Exception: pass
+            self.after(0, lambda err=str(e): messagebox.showerror(
+                "Errore aggiornamento",
+                f"Impossibile sostituire l'eseguibile:\n{err}",
+                parent=self))
+            self.after(0, lambda: self.title(
+                f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
+            return
+
+        # ── lancia il nuovo exe (nome definitivo) e digli di cancellare il vecchio ──
         try:
             subprocess.Popen(
-                [new_exe, f"--replace={exe_path}"],
+                [exe_path, f"--replace={old_exe}"],
                 creationflags=subprocess.DETACHED_PROCESS
                               | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
             self.after(0, self.destroy)
         except Exception as e:
-            if os.path.isfile(new_exe):
-                try: os.remove(new_exe)
-                except Exception: pass
             self.after(0, lambda err=str(e): messagebox.showerror(
                 "Errore aggiornamento",
                 f"Impossibile avviare la nuova versione:\n{err}",
