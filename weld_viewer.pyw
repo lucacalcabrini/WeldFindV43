@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.44"
+APP_VERSION = "5.0.45"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -1482,7 +1482,7 @@ class WeldViewerApp(tk.Tk):
         exe_dir  = os.path.dirname(sys.executable)
         exe_name = os.path.basename(sys.executable)
         # vecchio schema con versione nel nome + temporanei dello swap auto-update
-        for pat in ("WeldDetector_v*.exe", "*.old.exe", "*.new.exe"):
+        for pat in ("WeldDetector_v*.exe", "*.old.exe", "*.new.exe", "*_update.bat"):
             for old in glob.glob(os.path.join(exe_dir, pat)):
                 if os.path.basename(old) != exe_name:
                     try:
@@ -1606,14 +1606,34 @@ class WeldViewerApp(tk.Tk):
                 f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
             return
 
-        # ── swap dei file: Windows consente di RINOMINARE un exe in esecuzione ──
-        # 1) sposta il vecchio (in uso) -> .old.exe   2) il nuovo -> nome definitivo
-        # 3) lancia il nuovo passando --replace=<.old.exe> che lo cancellera'
+        # ── verifica integrità del download ──────────────────────────────
+        # Se la connessione si tronca, resp.read() ritorna vuoto e il loop esce
+        # SENZA errore: senza questo controllo sostituiremmo l'exe con un file
+        # corrotto/parziale che poi non parte.
+        try:
+            dl_size = os.path.getsize(new_exe)
+        except Exception:
+            dl_size = 0
+        if (total and dl_size < total) or dl_size < 1_000_000:
+            try: os.remove(new_exe)
+            except Exception: pass
+            self.after(0, lambda: messagebox.showerror(
+                "Errore aggiornamento",
+                "Download non valido o incompleto.\n"
+                "Riprova, oppure scarica manualmente da:\n"
+                f"https://github.com/{self._GITHUB_REPO}/releases/latest",
+                parent=self))
+            self.after(0, lambda: self.title(
+                f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
+            return
+
+        # ── swap dei file (rename trick, gestito da Python: Unicode-safe) ──
+        # 1) vecchio exe (in uso) -> .old.exe   2) nuovo -> nome definitivo
         try:
             if os.path.exists(old_exe):
                 try: os.remove(old_exe)
                 except Exception: pass
-            os.rename(exe_path, old_exe)   # WeldDetector.exe   -> WeldDetector.old.exe
+            os.rename(exe_path, old_exe)   # WeldDetector.exe     -> WeldDetector.old.exe
             os.rename(new_exe, exe_path)   # WeldDetector.new.exe -> WeldDetector.exe
         except Exception as e:
             # rollback: ripristina il nome originale se lo swap e' fallito a meta'
@@ -1631,19 +1651,43 @@ class WeldViewerApp(tk.Tk):
                 f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
             return
 
-        # ── lancia il nuovo exe (nome definitivo) e digli di cancellare il vecchio ──
+        # ── relauncher esterno (.bat) ─────────────────────────────────────
+        # PRIMA si avviava il nuovo exe direttamente dal processo morente:
+        # inaffidabile, il nuovo non partiva. Ora un piccolo script attende la
+        # chiusura COMPLETA di questo processo (via PID), poi avvia il nuovo exe
+        # in un contesto pulito e ripulisce .old + se stesso.
+        bat_path = os.path.join(exe_dir, f"{stem}_update.bat")
+        pid = os.getpid()
+        bat = (
+            "@echo off\r\n"
+            ":wait\r\n"
+            "ping -n 2 127.0.0.1 >nul\r\n"   # ~1s di attesa (timeout fallisce senza console)
+            f'tasklist /fi "PID eq {pid}" 2>nul | find "{pid}" >nul && goto wait\r\n'
+            f'start "" "{exe_path}"\r\n'      # avvia il nuovo exe a processo vecchio chiuso
+            f'del "{old_exe}" >nul 2>&1\r\n'  # rimuove la versione precedente
+            'del "%~f0" >nul 2>&1\r\n'        # lo script cancella se stesso
+        )
         try:
+            with open(bat_path, "w", encoding="mbcs", errors="ignore", newline="") as f:
+                f.write(bat)
             subprocess.Popen(
-                [exe_path, f"--replace={old_exe}"],
-                creationflags=subprocess.DETACHED_PROCESS
+                ["cmd", "/c", bat_path],
+                creationflags=subprocess.CREATE_NO_WINDOW
                               | subprocess.CREATE_NEW_PROCESS_GROUP,
+                cwd=exe_dir, close_fds=True,
             )
             self.after(0, self.destroy)
         except Exception as e:
-            self.after(0, lambda err=str(e): messagebox.showerror(
-                "Errore aggiornamento",
-                f"Impossibile avviare la nuova versione:\n{err}",
-                parent=self))
+            # fallback: prova ad avviare comunque il nuovo exe già al suo posto
+            try:
+                os.startfile(exe_path)
+                self.after(0, self.destroy)
+            except Exception:
+                self.after(0, lambda err=str(e): messagebox.showerror(
+                    "Errore aggiornamento",
+                    f"Aggiornamento installato, ma riavvio automatico non riuscito:\n{err}\n\n"
+                    f"Avvia manualmente WeldDetector.exe dalla cartella del programma.",
+                    parent=self))
 
     # ── STYLE ─────────────────────────────────────────────────
     def _style(self):
@@ -8953,113 +8997,3 @@ if __name__ == "__main__":
 
     app = WeldViewerApp()
     app.mainloop()
-    def _autoexp_on_trigger(self, row_idx: int, db_num: int):
-        """Trigger scattato per db_num: leggi DB completo, salva, aggiorna UI."""
-        ms  = self._autoexp_ms
-        omap = self._autoexp_omap
-        try:
-            raw = bytearray(self._autoexp_db_size)
-            # Leggi a blocchi (Snap7 max ~65KB per chiamata)
-            block = 512
-            for off in range(0, self._autoexp_db_size, block):
-                sz  = min(block, self._autoexp_db_size - off)
-                raw[off:off+sz] = self._autoexp_client.db_read(db_num, off, sz)
-
-            decoded = plc_decode_db(raw, omap, ms)
-            sc = decoded["scalars"]
-
-            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            seq = self._autoexp_export_count + self._autoexp_reject_count + 1
-
-            # Determina saldatura trovata
-            clusters_valid    = int(sc.get("iClustersValid",     0))
-            consecutive_count = int(sc.get("iConsecutiveCount",  0))
-            min_consecutive   = int(sc.get("I_MinConsecutive",   1))
-            weld_found = (clusters_valid >= 1 and consecutive_count >= min_consecutive)
-
-            if weld_found:
-                self._autoexp_export_count += 1
-                dest_dir = self._pv_autoexp_path.get().strip()
-                prefix = "OK"
-                self._ae_db_rows[row_idx]["ok"] += 1
-            else:
-                self._autoexp_reject_count += 1
-                dest_dir = self._pv_autoexp_path_rej.get().strip()
-                prefix = "SCARTO"
-                self._ae_db_rows[row_idx]["rej"] += 1
-
-            ts_file = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:18]
-            db_name  = f"WeldFind_DB{db_num}"
-            filename  = f"{db_name}_{prefix}_{ts_file}_{seq:04d}.db"
-            filepath  = os.path.join(dest_dir, filename)
-
-            db_text = plc_generate_db_text(decoded, db_name, ms)
-
-            # Salva file .db
-            if self._pv_autoexp_save_file.get():
-                os.makedirs(dest_dir, exist_ok=True)
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write(db_text)
-
-            # Salva SQLite
-            if self._pv_autoexp_save_sql.get() and self._autoexp_sql_con:
-                try:
-                    decoded["timestamp"] = ts
-                    rid = weld_sqlite_insert(
-                        self._autoexp_sql_con, db_num, decoded, filename, ms)
-                    self._plc_log_msg(f"  \u2502 SQLite row #{rid}\n")
-                except Exception as sql_e:
-                    self._plc_log_msg(f"  \u2502 SQLite err: {sql_e}\n", "warn")
-
-            # Log
-            peak      = sc.get("rPeakValue", 0)
-            dev       = sc.get("rPeakDeviation", 0)
-            det_angle = sc.get("rDetectedAtAngle", 0)
-            pol       = int(sc.get("I_PeakPolarity", 0))
-            pol_name  = {0:"Pos",1:"Neg",2:"Both"}.get(pol,"?")
-            n_samp    = int(sc.get("iSamplesAcquired", 0))
-
-            icon = "\u2713 BUONO" if weld_found else "\u2717 SCARTO"
-            self._plc_log_msg(f"{icon}  DB{db_num} #{seq}: {filename}\n",
-                              "ok" if weld_found else "warn")
-            self._plc_log_msg(
-                f"  {n_samp} camp. | clV={clusters_valid} cons={consecutive_count}"
-                f"/{min_consecutive} | peak={peak:.3f} ang={det_angle:.1f}\u00b0 {pol_name}\n")
-
-            # Aggiorna contatori riga
-            rok = self._ae_db_rows[row_idx]["ok"]
-            rrj = self._ae_db_rows[row_idx]["rej"]
-            self._ae_db_rows[row_idx]["count"].set(f"\u2713{rok} \u2717{rrj}")
-
-            # Contatori globali + SQLite info
-            sql_info = ""
-            if self._pv_autoexp_save_sql.get() and self._autoexp_sql_con:
-                import sqlite3 as _sq3
-                try:
-                    _n = _sq3.connect(self._pv_autoexp_sql_path.get()).execute(
-                        "SELECT COUNT(*) FROM acquisitions").fetchone()[0]
-                    sql_info = f"  \U0001f5c4{_n}"
-                except Exception: pass
-            self._pv_autoexp_count.set(
-                f"\u2713 {self._autoexp_export_count}  \u2717 {self._autoexp_reject_count}{sql_info}")
-            self._pv_autoexp_last.set(f"{'\u2713' if weld_found else '\u2717'} DB{db_num} {ts[11:]}")
-            self._pv_autoexp_status.set("\u25cf Monitoraggio attivo")
-
-            # Carica nel viewer se questo DB ha il flag viewer abilitato
-            if self._pv_autoexp_viewer.get() and self._ae_db_rows[row_idx]["viewer"].get():
-                data = parse_db_file_from_text(db_text, filename)
-                self.db_data = data
-                self.lbl_file.config(text=f"\U0001f504 DB{db_num}: {filename}")
-                self._update_results_panel()
-                self._preload_sim_params()
-                self._recompute()
-                self._update_raw_tab()
-
-            self.app_log(
-                f"AE {'OK' if weld_found else 'SCARTO'} DB{db_num} #{seq}: {filename} "
-                f"(clV={clusters_valid} cons={consecutive_count}/{min_consecutive})",
-                "ok" if weld_found else "warn")
-
-        except Exception as e:
-            self._plc_log_msg(f"\u2717 Errore DB{db_num}: {e}\n", "err")
-            self._pv_autoexp_status.set("\u25cf Monitoraggio attivo (errore)")
