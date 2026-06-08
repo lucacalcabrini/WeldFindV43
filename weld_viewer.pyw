@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.43"
+APP_VERSION = "5.0.44"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -7411,6 +7411,8 @@ class WeldViewerApp(tk.Tk):
                    command=self._stat_copy_params).pack(side="left")
         ttk.Button(bf, text="\U0001f4c2  Separatore File",
                    command=self._open_file_sorter).pack(side="left", padx=4)
+        ttk.Button(bf, text="\U0001f4ca  Strumento Confronto",
+                   command=self._stat_open_compare).pack(side="left", padx=4)
 
         # Barra discordanze PLC vs Sim
         disc_f = ttk.LabelFrame(right, text="  \u26a0  Discordanze PLC \u2194 Sim  ", padding=4)
@@ -8171,6 +8173,315 @@ class WeldViewerApp(tk.Tk):
         """Ricalcola ranking quando l'utente cambia i criteri di score."""
         if getattr(self, '_stat_results', None):
             self._stat_update_results()
+
+    # ══════════════════════════════════════════════════════════════
+    #  STRUMENTO CONFRONTO COMBINAZIONI (finestra autonoma)
+    # ══════════════════════════════════════════════════════════════
+    def _stat_full_params(self, ci):
+        """Tutti i parametri (sweep + fissi) per la combo ci."""
+        p = dict(zip(self._stat_keys, self._stat_combos[ci]))
+        for k, d in self._stat_swp.items():
+            if k in p:
+                continue
+            try:
+                raw = d["fix"].get()
+                p[k] = int(float(raw)) if d.get("int") else float(raw)
+            except (ValueError, TypeError, AttributeError):
+                pass
+        return p
+
+    def _stat_combo_profile(self, ci):
+        """Profilo completo (metriche + parametri) di una combo su tutti i file."""
+        n_files = len(self._stat_paths)
+        snrs = []; found = 0; total = 0
+        for fi in range(n_files):
+            r = self._stat_results.get((fi, ci))
+            if r is None:
+                continue
+            total += 1
+            if r[0]:
+                found += 1
+                snrs.append(float(r[1]))
+        pct = 100.0 * found / total if total else 0.0
+        arr = np.array(snrs) if snrs else np.array([0.0])
+        params = self._stat_full_params(ci)
+        return {
+            "ci": ci, "pct": pct, "found": found, "total": total,
+            "snrs": snrs,
+            "snr_med":  float(np.median(arr)),
+            "snr_min":  float(np.min(arr)),
+            "snr_mean": float(np.mean(arr)),
+            "snr_std":  float(np.std(arr)),
+            "params": params,
+            "sigma_factor":    float(params.get("sigma_factor", 0.0)),
+            "min_abs_dev":     float(params.get("min_abs_dev", 0.0)),
+            "hyst_sigmas":     float(params.get("hyst_sigmas", 0.0)),
+            "window_deg":      float(params.get("window_deg", 0.0)),
+            "min_consecutive": float(params.get("min_consecutive", 0.0)),
+        }
+
+    def _stat_combo_label(self, ci):
+        """Etichetta compatta dei parametri in sweep per la combo ci."""
+        abbr = {"sigma_factor": "σ", "min_abs_dev": "ma", "hyst_sigmas": "hy",
+                "window_deg": "w", "min_consecutive": "mc",
+                "flat_wait_enable": "fe", "flat_wait_samples": "fs",
+                "flat_wait_toll": "ft"}
+        parts = []
+        for k, v in zip(self._stat_keys, self._stat_combos[ci]):
+            is_int = self._stat_swp.get(k, {}).get("int", False)
+            vs = str(int(v)) if is_int else f"{v:g}"
+            parts.append(f"{abbr.get(k, k)}{vs}")
+        return " ".join(parts) if parts else f"#{ci}"
+
+    def _stat_rank_combos(self, limit=300):
+        """Combo con almeno un trovato, ordinate per % desc, max `limit`."""
+        n_files = len(self._stat_paths)
+        rows = []
+        for ci in range(len(self._stat_combos)):
+            snrs = []; found = 0; total = 0
+            for fi in range(n_files):
+                r = self._stat_results.get((fi, ci))
+                if r is None:
+                    continue
+                total += 1
+                if r[0]:
+                    found += 1
+                    snrs.append(float(r[1]))
+            if total == 0:
+                continue
+            pct = 100.0 * found / total
+            if pct <= 0:
+                continue
+            rows.append((ci, pct,
+                         float(np.median(snrs)) if snrs else 0.0,
+                         float(np.min(snrs)) if snrs else 0.0))
+        rows.sort(key=lambda x: (x[1], x[2]), reverse=True)
+        return rows[:limit]
+
+    def _stat_open_compare(self):
+        """Apre la finestra autonoma di confronto combinazioni."""
+        if not getattr(self, "_stat_results", None) or not getattr(self, "_stat_combos", None):
+            messagebox.showinfo("Strumento Confronto",
+                                "Esegui prima un grid search nel tab Statistiche.")
+            return
+        # Se già aperta, portala in primo piano
+        if getattr(self, "_cmp_win", None) is not None:
+            try:
+                self._cmp_win.deiconify(); self._cmp_win.lift(); return
+            except Exception:
+                self._cmp_win = None
+
+        ranked = self._stat_rank_combos()
+        if not ranked:
+            messagebox.showinfo("Strumento Confronto",
+                                "Nessuna combinazione con rilevamenti da confrontare.")
+            return
+
+        win = tk.Toplevel(self)
+        self._cmp_win = win
+        win.title("Strumento Confronto Combinazioni")
+        win.configure(bg=DARK_BG)
+        win.geometry("1360x860")
+        def _on_close():
+            self._cmp_win = None
+            try: win.destroy()
+            except Exception: pass
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+
+        tk.Label(win, bg=DARK_BG, fg=ACCENT, font=("Consolas", 11, "bold"),
+                 anchor="w",
+                 text="  Seleziona 2-6 combinazioni (clic sulla riga) e premi « Confronta »"
+                 ).pack(fill="x", padx=8, pady=(8, 2))
+
+        body = ttk.Frame(win); body.pack(fill="both", expand=True, padx=6, pady=4)
+
+        # ═══ SINISTRA: picker combinazioni ═══
+        left = ttk.LabelFrame(body, text="  Combinazioni disponibili (top 300 per % trovati)  ",
+                              padding=4)
+        left.pack(side="left", fill="y")
+
+        cols = ["chk"] + list(self._stat_keys) + ["pct", "snrmed", "snrmin"]
+        tv = ttk.Treeview(left, columns=cols, show="headings", height=30, selectmode="none")
+        tv.heading("chk", text="✓"); tv.column("chk", width=32, anchor="center", stretch=False)
+        for k in self._stat_keys:
+            tv.heading(k, text=k); tv.column(k, width=70, anchor="center", stretch=False)
+        tv.heading("pct", text="% trov");  tv.column("pct", width=58, anchor="center", stretch=False)
+        tv.heading("snrmed", text="SNR med"); tv.column("snrmed", width=64, anchor="center", stretch=False)
+        tv.heading("snrmin", text="SNR min"); tv.column("snrmin", width=64, anchor="center", stretch=False)
+        tv.tag_configure("on", background="#0f2d0f", foreground=OK_CLR)
+        sb = ttk.Scrollbar(left, command=tv.yview); tv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        tv.pack(side="left", fill="y")
+        self._cmp_tv = tv
+        self._cmp_checked = set()
+
+        for ci, pct, sm, sn in ranked:
+            vals = ["☐"]
+            for k, v in zip(self._stat_keys, self._stat_combos[ci]):
+                vals.append(str(int(v)) if self._stat_swp[k]["int"] else f"{v:g}")
+            vals += [f"{pct:.0f}%", f"{sm:.2f}", f"{sn:.2f}"]
+            tv.insert("", "end", iid=str(ci), values=vals)
+
+        pick_bar = ttk.Frame(left); pick_bar.pack(side="bottom", fill="x", pady=(4, 0))
+        cnt_var = tk.StringVar(value="0 selezionate")
+        ttk.Label(pick_bar, textvariable=cnt_var, style="Muted.TLabel").pack(side="left", padx=4)
+
+        def _update_count():
+            cnt_var.set(f"{len(self._cmp_checked)} selezionate")
+
+        def _toggle(event):
+            row = tv.identify_row(event.y)
+            if not row:
+                return
+            ci = int(row)
+            if ci in self._cmp_checked:
+                self._cmp_checked.discard(ci)
+                tv.set(row, "chk", "☐"); tv.item(row, tags=())
+            else:
+                if len(self._cmp_checked) >= 6:
+                    messagebox.showinfo("Strumento Confronto",
+                                        "Massimo 6 combinazioni per chiarezza.", parent=win)
+                    return
+                self._cmp_checked.add(ci)
+                tv.set(row, "chk", "☑"); tv.item(row, tags=("on",))
+            _update_count()
+        tv.bind("<Button-1>", _toggle)
+
+        def _clear():
+            for ci in list(self._cmp_checked):
+                try:
+                    tv.set(str(ci), "chk", "☐"); tv.item(str(ci), tags=())
+                except Exception:
+                    pass
+            self._cmp_checked.clear(); _update_count()
+
+        ttk.Button(pick_bar, text="Pulisci", command=_clear).pack(side="right", padx=2)
+        ttk.Button(pick_bar, text="\U0001f50d  Confronta", style="Accent.TButton",
+                   command=self._cmp_draw).pack(side="right", padx=2)
+
+        # ═══ DESTRA: grafici + verdetto ═══
+        right = ttk.Frame(body); right.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        fig = Figure(facecolor=DARK_BG, figsize=(8.5, 7))
+        self._cmp_fig = fig
+        self._cmp_ax_radar = fig.add_subplot(2, 2, 1, polar=True)
+        self._cmp_ax_bars  = fig.add_subplot(2, 2, 2)
+        self._cmp_ax_box   = fig.add_subplot(2, 2, 3)
+        self._cmp_ax_scat  = fig.add_subplot(2, 2, 4)
+        fig.subplots_adjust(left=0.07, right=0.97, top=0.92, bottom=0.08,
+                            hspace=0.40, wspace=0.28)
+        for _a in (self._cmp_ax_bars, self._cmp_ax_box, self._cmp_ax_scat):
+            self._style_axes(_a, "", "", "")
+        self._cmp_ax_radar.set_facecolor(PANEL_BG)
+        canvas = FigureCanvasTkAgg(fig, right)
+        self._cmp_canvas = canvas
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        self._cmp_verdict = tk.StringVar(
+            value="Seleziona almeno 2 combinazioni e premi « Confronta ».")
+        tk.Label(right, textvariable=self._cmp_verdict, bg=PANEL_BG, fg=OK_CLR,
+                 font=("Consolas", 10, "bold"), justify="left", anchor="w",
+                 wraplength=820).pack(fill="x", pady=(4, 2))
+
+    def _cmp_draw(self):
+        """Calcola i profili dei candidati selezionati e disegna i 4 pannelli."""
+        cis = sorted(self._cmp_checked)
+        if len(cis) < 2:
+            messagebox.showinfo("Strumento Confronto",
+                                "Seleziona almeno 2 combinazioni.", parent=self._cmp_win)
+            return
+
+        profs  = [self._stat_combo_profile(ci) for ci in cis]
+        labels = [f"#{i+1} {self._stat_combo_label(ci)}" for i, ci in enumerate(cis)]
+        palette = ["#58a6ff", "#3fb950", "#f0883e", "#bc8cff", "#ff6e85", "#4fc3f7"]
+        colors  = [palette[i % len(palette)] for i in range(len(profs))]
+
+        # ── normalizzazione min-max tra i candidati ──
+        def _norm(vals, higher_better):
+            vmin, vmax = min(vals), max(vals)
+            if vmax == vmin:
+                return [0.5] * len(vals)
+            if higher_better:
+                return [(v - vmin) / (vmax - vmin) for v in vals]
+            return [(vmax - v) / (vmax - vmin) for v in vals]
+
+        axes_def = [
+            ("Copertura",   [p["pct"] for p in profs], True),
+            ("Qualità", [p["snr_med"] for p in profs], True),
+            ("Robustezza",  [p["snr_min"] for p in profs], True),
+            ("Consistenza", [p["snr_std"] for p in profs], False),
+            ("Selettività",
+             [p["sigma_factor"] * max(p["min_consecutive"], 1.0) for p in profs], True),
+            ("Reattività", [p["window_deg"] for p in profs], False),
+        ]
+        cat = [a[0] for a in axes_def]
+        norm_axes = [_norm(vals, hb) for (_, vals, hb) in axes_def]
+        N = len(cat)
+
+        # ── RADAR ──
+        axr = self._cmp_ax_radar; axr.clear()
+        axr.set_facecolor(PANEL_BG)
+        axr.set_theta_offset(np.pi / 2); axr.set_theta_direction(-1)
+        angs = [n / float(N) * 2 * np.pi for n in range(N)]; angs += angs[:1]
+        axr.set_xticks(angs[:-1]); axr.set_xticklabels(cat, color=MUTED_CLR, fontsize=8)
+        axr.set_ylim(0, 1); axr.set_yticks([0.25, 0.5, 0.75, 1.0]); axr.set_yticklabels([])
+        axr.tick_params(colors=MUTED_CLR)
+        axr.grid(True, color=BORDER_CLR, alpha=0.6)
+        try: axr.spines["polar"].set_color(BORDER_CLR)
+        except Exception: pass
+        for i, p in enumerate(profs):
+            vals = [norm_axes[a][i] for a in range(N)]; vals += vals[:1]
+            axr.plot(angs, vals, color=colors[i], linewidth=1.6)
+            axr.fill(angs, vals, color=colors[i], alpha=0.12)
+        axr.set_title("Profilo multi-criterio", color=ACCENT, fontsize=10, pad=12)
+
+        # ── BARRE: SNR med / SNR min reali ──
+        axb = self._cmp_ax_bars; axb.clear()
+        self._style_axes(axb, "SNR (valori reali)", "", "SNR")
+        groups = ["SNR med", "SNR min"]
+        gx = np.arange(len(groups)); w = 0.8 / len(profs)
+        for i, p in enumerate(profs):
+            ys = [p["snr_med"], p["snr_min"]]
+            axb.bar(gx + i * w - 0.4 + w / 2, ys, width=w, color=colors[i])
+        axb.set_xticks(gx); axb.set_xticklabels(groups, color=MUTED_CLR, fontsize=8)
+
+        # ── BOX: distribuzione SNR per-file ──
+        axx = self._cmp_ax_box; axx.clear()
+        self._style_axes(axx, "Distribuzione SNR per-file", "", "SNR")
+        data = [p["snrs"] if p["snrs"] else [0.0] for p in profs]
+        bp = axx.boxplot(data, patch_artist=True, showmeans=True)
+        for i, box in enumerate(bp["boxes"]):
+            box.set(facecolor=colors[i], alpha=0.35, edgecolor=colors[i])
+        for elem in ("whiskers", "caps", "medians"):
+            for art in bp[elem]:
+                art.set_color(MUTED_CLR)
+        axx.set_xticks(range(1, len(profs) + 1))
+        axx.set_xticklabels([f"#{i+1}" for i in range(len(profs))],
+                            color=MUTED_CLR, fontsize=8)
+
+        # ── SCATTER: copertura vs qualità ──
+        axs = self._cmp_ax_scat; axs.clear()
+        self._style_axes(axs, "Copertura ↔ Qualità", "% trovati", "SNR med")
+        for i, p in enumerate(profs):
+            axs.scatter(p["pct"], p["snr_med"], s=110, color=colors[i],
+                        label=labels[i], zorder=3, edgecolors=DARK_BG)
+            axs.annotate(f"#{i+1}", (p["pct"], p["snr_med"]), color=TEXT_CLR,
+                         fontsize=8, xytext=(5, 4), textcoords="offset points")
+        axs.legend(fontsize=7, facecolor=PANEL_BG, edgecolor=BORDER_CLR,
+                   labelcolor=TEXT_CLR, loc="best")
+
+        self._cmp_fig.canvas.draw_idle()
+
+        # ── VERDETTO ──
+        best_cov  = max(range(len(profs)), key=lambda i: profs[i]["pct"])
+        best_prec = max(range(len(profs)), key=lambda i: profs[i]["snr_med"])
+        best_rob  = max(range(len(profs)), key=lambda i: profs[i]["snr_min"])
+        comp = [sum(norm_axes[a][i] for a in range(N)) for i in range(len(profs))]
+        best_comp = max(range(len(profs)), key=lambda i: comp[i])
+        self._cmp_verdict.set(
+            f"\U0001f3c6 Più copertura: #{best_cov+1} ({profs[best_cov]['pct']:.0f}%)"
+            f"   ·   Più preciso: #{best_prec+1} (SNR med {profs[best_prec]['snr_med']:.2f})"
+            f"   ·   Più robusto: #{best_rob+1} (SNR min {profs[best_rob]['snr_min']:.2f})"
+            f"   ·   Miglior compromesso: #{best_comp+1} — {self._stat_combo_label(cis[best_comp])}")
 
     def _stat_update_results(self):
         """Calcola best set e aggiorna card + tabella + grafico."""
