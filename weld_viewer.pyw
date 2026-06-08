@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.42"
+APP_VERSION = "5.0.43"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -7423,8 +7423,30 @@ class WeldViewerApp(tk.Tk):
         self._stat_disc_label = _dl
 
         # Tabella top risultati
-        tbl_lf = ttk.LabelFrame(right, text="  Risultati (score: pct + SNR + SigmaF + MinAbs + Window°)  ", padding=4)
+        tbl_lf = ttk.LabelFrame(right, text="  Risultati — criteri di ordinamento:  ", padding=4)
         tbl_lf.pack(fill="x", padx=6, pady=2)
+        # ── barra selezione metriche per lo score ──
+        _sc_bar = ttk.Frame(tbl_lf)
+        _sc_bar.pack(fill="x", pady=(0, 4))
+        ttk.Label(_sc_bar, text="Ordina per:",
+                  font=("Consolas", 8), style="Muted.TLabel").pack(side="left", padx=(0, 6))
+        self._stat_score_vars = {}
+        for _sk, _sl, _sclr in [
+            ("pct",     "% trovati", OK_CLR),
+            ("snr_med", "SNR med.",  "#4fc3f7"),
+            ("sig_f",   "SigmaF",   "#58a6ff"),
+            ("min_abs", "MinAbs",   "#3fb950"),
+            ("win_deg", "Window°",  "#f0883e"),
+        ]:
+            _bv = tk.BooleanVar(value=True)
+            self._stat_score_vars[_sk] = _bv
+            tk.Checkbutton(
+                _sc_bar, text=_sl, variable=_bv,
+                bg=PANEL_BG, fg=_sclr, selectcolor=ENTRY_BG,
+                activebackground=PANEL_BG, activeforeground=_sclr,
+                font=("Consolas", 8, "bold"),
+                command=self._stat_rescore,
+            ).pack(side="left", padx=4)
         tbl_sh = ttk.Scrollbar(tbl_lf, orient="horizontal"); tbl_sh.pack(side="bottom", fill="x")
         tbl_sv = ttk.Scrollbar(tbl_lf);                       tbl_sv.pack(side="right",  fill="y")
         self._stat_tree = ttk.Treeview(tbl_lf, show="headings", height=10,
@@ -8145,6 +8167,11 @@ class WeldViewerApp(tk.Tk):
             f"{self._stat_done:,} / {self._stat_total:,}  ({pct:.0f}%)")
         self._stat_finish()
 
+    def _stat_rescore(self):
+        """Ricalcola ranking quando l'utente cambia i criteri di score."""
+        if getattr(self, '_stat_results', None):
+            self._stat_update_results()
+
     def _stat_update_results(self):
         """Calcola best set e aggiorna card + tabella + grafico."""
         n_files  = len(self._stat_paths)
@@ -8170,6 +8197,13 @@ class WeldViewerApp(tk.Tk):
         _sf_fix = _fix('sigma_factor', 3.0) if _sf_i < 0 else 0.0
         _ma_fix = _fix('min_abs_dev',  1.5) if _ma_i < 0 else 0.0
         _wd_fix = _fix('window_deg',   2.0) if _wd_i < 0 else 0.0
+        # Criteri di score selezionati dall'utente via checkbox
+        _sv       = getattr(self, '_stat_score_vars', {})
+        _use_pct  = _sv['pct'].get()     if 'pct'     in _sv else True
+        _use_snr  = _sv['snr_med'].get() if 'snr_med' in _sv else True
+        _use_sf   = _sv['sig_f'].get()   if 'sig_f'   in _sv else True
+        _use_ma   = _sv['min_abs'].get() if 'min_abs' in _sv else True
+        _use_wd   = _sv['win_deg'].get() if 'win_deg' in _sv else True
         best_score = -1.0; best_ci = 0
         best_pct = -1.0; best_snr_med = 0.0; best_snr_min = 0.0
 
@@ -8190,8 +8224,12 @@ class WeldViewerApp(tk.Tk):
             sig_facts[ci] = float(cmb[_sf_i]) if _sf_i >= 0 else _sf_fix
             min_abss[ci]  = float(cmb[_ma_i]) if _ma_i >= 0 else _ma_fix
             win_degs[ci]  = float(cmb[_wd_i]) if _wd_i >= 0 else _wd_fix
-            # Score: somma pct + snr_med + sigma_factor + min_abs_dev + window_deg (tutti desc)
-            score = pct + snr_meds[ci] + sig_facts[ci] + min_abss[ci] + win_degs[ci]
+            # Score composito: solo le metriche abilitate dall'utente
+            score = ((pcts[ci]      if _use_pct else 0.0) +
+                     (snr_meds[ci]  if _use_snr else 0.0) +
+                     (sig_facts[ci] if _use_sf  else 0.0) +
+                     (min_abss[ci]  if _use_ma  else 0.0) +
+                     (win_degs[ci]  if _use_wd  else 0.0))
             if score > best_score:
                 best_score = score; best_ci = ci
                 best_pct = pct
@@ -8245,11 +8283,16 @@ class WeldViewerApp(tk.Tk):
         self._stat_last_best = {"params": params, "pct": best_pct,
                                  "snr_med": best_snr_med, "snr_min": best_snr_min}
 
-        # Ordinati: score composito desc (pct + snr_med + sigma_factor + min_abs_dev + window_deg)
+        # Ordinati: score composito desc — solo metriche abilitate dall'utente
         ranked = sorted(
             [(ci, pcts[ci], snr_meds[ci], snr_mins[ci], sig_facts[ci], min_abss[ci], win_degs[ci])
              for ci in range(n_combos) if pcts[ci] > 0],
-            key=lambda x: x[1] + x[2] + x[4] + x[5] + x[6], reverse=True)
+            key=lambda x: ((x[1] if _use_pct else 0.0) +
+                           (x[2] if _use_snr else 0.0) +
+                           (x[4] if _use_sf  else 0.0) +
+                           (x[5] if _use_ma  else 0.0) +
+                           (x[6] if _use_wd  else 0.0)),
+            reverse=True)
 
         cols = self._stat_keys + ["% trovati", "SNR med.", "SNR min.", "SigmaF", "MinAbs"]
         self._stat_tree.config(columns=cols)
