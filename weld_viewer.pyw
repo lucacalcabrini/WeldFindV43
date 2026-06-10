@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.46"
+APP_VERSION = "5.0.47"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -106,6 +106,8 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 _MAIN_PID = os.getpid()  # PID main process; worker hanno pid diverso
+_RESTARTING = False      # True durante un auto-update: NON uccidere l'albero dei
+                         # figli (il nuovo exe è un figlio che deve sopravvivere)
 
 def _kill_process_tree():
     # Esegui solo nel processo principale, non nei worker
@@ -115,18 +117,70 @@ def _kill_process_tree():
         if sys.platform == "win32":
             import subprocess
             CREATE_NO_WINDOW = 0x08000000
+            # Durante un update NIENTE /T: altrimenti taskkill ucciderebbe anche
+            # il nuovo exe (processo figlio) appena lanciato per il riavvio.
+            cmd = (["taskkill", "/F", "/PID", str(_MAIN_PID)] if _RESTARTING
+                   else ["taskkill", "/F", "/T", "/PID", str(_MAIN_PID)])
             subprocess.call(
-                ["taskkill", "/F", "/T", "/PID", str(_MAIN_PID)],
+                cmd,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=CREATE_NO_WINDOW)
         else:
-            pgid = os.getpgid(_MAIN_PID)
-            os.killpg(pgid, signal.SIGKILL)
+            if _RESTARTING:
+                os.kill(_MAIN_PID, signal.SIGKILL)
+            else:
+                os.killpg(os.getpgid(_MAIN_PID), signal.SIGKILL)
     except Exception:
         try: os.kill(_MAIN_PID, signal.SIGKILL)
         except Exception: pass
 
 atexit.register(_kill_process_tree)
+
+
+def _pid_alive(pid):
+    """True se il processo <pid> è ancora in esecuzione (Windows)."""
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH"],
+            capture_output=True, text=True,
+            creationflags=0x08000000).stdout or ""
+        return str(int(pid)) in out
+    except Exception:
+        return False
+
+
+def _apply_update_and_relaunch(target, old_pid):
+    """Eseguito dal NUOVO exe in staging (file .upd):
+      1) attende la chiusura del vecchio processo;
+      2) si copia SOPRA <target> (stesso nome e posizione → l'icona non si sposta);
+      3) riavvia l'exe aggiornato.
+    Termina con os._exit per NON far scattare _kill_process_tree sul figlio."""
+    import time as _t, shutil, subprocess
+    staging = os.path.abspath(sys.executable)
+    target  = os.path.abspath(target)
+    # 1) attende che il vecchio termini (max ~15s)
+    for _ in range(150):
+        if old_pid <= 0 or not _pid_alive(old_pid):
+            break
+        _t.sleep(0.1)
+    # 2) sovrascrive il vecchio exe col nuovo, ritentando se ancora bloccato (~12s)
+    copied = False
+    for _ in range(60):
+        try:
+            shutil.copy2(staging, target); copied = True; break
+        except Exception:
+            _t.sleep(0.2)
+    # 3) riavvia l'exe aggiornato (nome/posizione stabili; fallback se la copia fallisce)
+    launch = target if (copied or os.path.isfile(target)) else staging
+    try:
+        DET = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        NPG = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        subprocess.Popen([launch], creationflags=DET | NPG)
+    except Exception:
+        try: subprocess.Popen([launch])
+        except Exception: pass
+    os._exit(0)
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -1391,10 +1445,11 @@ class WeldViewerApp(tk.Tk):
         # *** v5.0 *** se non esiste il file impostazioni, apri popup al primo avvio
         if not os.path.isfile(self._SETTINGS_FILE):
             self.after(800, self._first_run_settings)
-        # Pulizia file residui aggiornamento precedente (bat + exe _new)
+        # Pulizia file residui aggiornamento precedente (.upd, .old, .new, bat)
         self.after(100, self._cleanup_update_leftovers)
-        # Controlla aggiornamenti GitHub (non bloccante, timeout 5s)
-        self.after(300, self._check_for_updates)
+        # Controllo aggiornamenti periodico (subordinato al flag auto_update)
+        self._update_check_timer = None
+        self.after(2000, self._schedule_update_check)
         # Controlla librerie all'avvio (non bloccante)
         self.after(500, self._startup_check_libs)
         # Ripresa Auto Export se era attivo durante un aggiornamento (one-shot)
@@ -1484,7 +1539,7 @@ class WeldViewerApp(tk.Tk):
         exe_dir  = os.path.dirname(sys.executable)
         exe_name = os.path.basename(sys.executable)
         # vecchio schema con versione nel nome + temporanei dello swap auto-update
-        for pat in ("WeldDetector_v*.exe", "*.old.exe", "*.new.exe", "*_update.bat"):
+        for pat in ("WeldDetector_v*.exe", "*.old.exe", "*.new.exe", "*_update.bat", "*.upd"):
             for old in glob.glob(os.path.join(exe_dir, pat)):
                 if os.path.basename(old) != exe_name:
                     try:
@@ -1492,6 +1547,19 @@ class WeldViewerApp(tk.Tk):
                         self.app_log(f"Rimossa versione precedente: {os.path.basename(old)}", "info")
                     except Exception:
                         pass
+
+    def _schedule_update_check(self):
+        """Controllo aggiornamenti periodico — attivo solo se auto_update=true.
+        Si ripianifica ogni check_interval_min minuti."""
+        au = str(self._settings.get("auto_update", "true")).lower() in ("1", "true", "yes", "on")
+        if not au:
+            return
+        self._check_for_updates()
+        try:
+            mins = max(1, int(self._settings.get("check_interval_min", "60")))
+        except (ValueError, TypeError):
+            mins = 60
+        self._update_check_timer = self.after(mins * 60 * 1000, self._schedule_update_check)
 
     def _check_for_updates(self):
         """Avvia controllo aggiornamenti in background (timeout 5s).
@@ -1538,32 +1606,33 @@ class WeldViewerApp(tk.Tk):
 
     def _offer_update(self, new_ver, url, filename, size_bytes):
         size_mb = size_bytes / 1024 / 1024
-        if messagebox.askyesno(
-            "🔄 Aggiornamento disponibile",
-            f"Versione  v{new_ver}  disponibile!\n"
-            f"Versione attuale:  v{APP_VERSION}\n\n"
-            f"Dimensione:  {size_mb:.1f} MB\n\n"
-            f"Scarico e riavvio ora?",
-            parent=self
-        ):
-            # Cattura ORA (main thread) la config Auto Export, così se è attivo
-            # potrà essere ripreso dopo il riavvio. Il flag di ripresa verrà
-            # impostato solo a swap riuscito, dentro _download_and_restart.
-            try:
-                if getattr(self, "_autoexp_running", False):
-                    self._autoexp_collect_config()
-            except Exception:
-                pass
-            import threading
-            threading.Thread(
-                target=self._download_and_restart,
-                args=(url, filename),
-                daemon=True
-            ).start()
+        # Aggiornamento automatico: nessun prompt (il comportamento è governato
+        # dal flag auto_update nelle Impostazioni). Registra e procede.
+        try:
+            self.app_log(f"⬇  v{new_ver} disponibile ({size_mb:.1f} MB) — download…", "info")
+        except Exception:
+            pass
+        # Cattura ORA (main thread) la config Auto Export, così se è attivo potrà
+        # essere ripreso dopo il riavvio. Il flag di ripresa verrà impostato a
+        # download riuscito dentro _download_and_restart (qui siamo sul main thread).
+        try:
+            if getattr(self, "_autoexp_running", False):
+                self._autoexp_collect_config()
+        except Exception:
+            pass
+        import threading
+        threading.Thread(
+            target=self._download_and_restart,
+            args=(url, filename),
+            daemon=True
+        ).start()
 
     def _download_and_restart(self, url, filename):
-        """Scarica il nuovo exe con barra % nel titolo, lo lancia, chiude questo.
-        Nessun bat: il nuovo exe cancella da solo il vecchio all'avvio via --replace=."""
+        """Scarica il nuovo exe in un file di staging «<exe>.upd», poi lo lancia
+        in modalità --apply-update: il nuovo exe attende la chiusura di QUESTO
+        processo, si copia SOPRA l'exe in esecuzione (stesso nome e posizione →
+        l'icona non si sposta) e si riavvia da solo."""
+        global _RESTARTING
         import urllib.request, subprocess
         if not getattr(sys, 'frozen', False):
             self.after(0, lambda: messagebox.showinfo(
@@ -1573,15 +1642,8 @@ class WeldViewerApp(tk.Tk):
                 parent=self))
             return
 
-        exe_path = sys.executable
-        exe_dir  = os.path.dirname(exe_path)
-        exe_base = os.path.basename(exe_path)
-        stem, ext = os.path.splitext(exe_base)
-        # Scarica sempre su un file temporaneo distinto: il nuovo exe puo' avere
-        # lo STESSO nome di quello in esecuzione (nome fisso WeldDetector.exe) e
-        # Windows non permette di sovrascrivere un eseguibile in uso.
-        new_exe  = os.path.join(exe_dir, f"{stem}.new{ext}")
-        old_exe  = os.path.join(exe_dir, f"{stem}.old{ext}")
+        exe_path = os.path.abspath(sys.executable)
+        staging  = exe_path + ".upd"      # stesso percorso, suffisso temporaneo
 
         # ── download a chunk, aggiorna titolo con percentuale ──────────────
         try:
@@ -1591,7 +1653,7 @@ class WeldViewerApp(tk.Tk):
             with urllib.request.urlopen(req, timeout=120) as resp:
                 total = int(resp.headers.get("Content-Length") or 0)
                 done  = 0
-                with open(new_exe, "wb") as f:
+                with open(staging, "wb") as f:
                     while True:
                         chunk = resp.read(65536)   # 64 KB alla volta
                         if not chunk:
@@ -1603,8 +1665,8 @@ class WeldViewerApp(tk.Tk):
                             self.after(0, lambda p=pct:
                                 self.title(f"⬇  Download {p}%…"))
         except Exception as e:
-            if os.path.isfile(new_exe):
-                try: os.remove(new_exe)
+            if os.path.isfile(staging):
+                try: os.remove(staging)
                 except Exception: pass
             self.after(0, lambda err=str(e): messagebox.showerror(
                 "Errore aggiornamento",
@@ -1616,46 +1678,21 @@ class WeldViewerApp(tk.Tk):
                 f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
             return
 
-        # ── verifica integrità del download ──────────────────────────────
+        # ── verifica integrità del download (dimensione completa) ──
         # Se la connessione si tronca, resp.read() ritorna vuoto e il loop esce
-        # SENZA errore: senza questo controllo sostituiremmo l'exe con un file
-        # corrotto/parziale che poi non parte.
+        # SENZA errore: senza questo controllo applicheremmo un file parziale.
         try:
-            dl_size = os.path.getsize(new_exe)
+            dl_size = os.path.getsize(staging)
         except Exception:
             dl_size = 0
         if (total and dl_size < total) or dl_size < 1_000_000:
-            try: os.remove(new_exe)
+            try: os.remove(staging)
             except Exception: pass
             self.after(0, lambda: messagebox.showerror(
                 "Errore aggiornamento",
                 "Download non valido o incompleto.\n"
                 "Riprova, oppure scarica manualmente da:\n"
                 f"https://github.com/{self._GITHUB_REPO}/releases/latest",
-                parent=self))
-            self.after(0, lambda: self.title(
-                f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
-            return
-
-        # ── swap dei file (rename trick, gestito da Python: Unicode-safe) ──
-        # 1) vecchio exe (in uso) -> .old.exe   2) nuovo -> nome definitivo
-        try:
-            if os.path.exists(old_exe):
-                try: os.remove(old_exe)
-                except Exception: pass
-            os.rename(exe_path, old_exe)   # WeldDetector.exe     -> WeldDetector.old.exe
-            os.rename(new_exe, exe_path)   # WeldDetector.new.exe -> WeldDetector.exe
-        except Exception as e:
-            # rollback: ripristina il nome originale se lo swap e' fallito a meta'
-            if not os.path.exists(exe_path) and os.path.exists(old_exe):
-                try: os.rename(old_exe, exe_path)
-                except Exception: pass
-            if os.path.isfile(new_exe):
-                try: os.remove(new_exe)
-                except Exception: pass
-            self.after(0, lambda err=str(e): messagebox.showerror(
-                "Errore aggiornamento",
-                f"Impossibile sostituire l'eseguibile:\n{err}",
                 parent=self))
             self.after(0, lambda: self.title(
                 f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
@@ -1672,43 +1709,30 @@ class WeldViewerApp(tk.Tk):
         except Exception:
             pass
 
-        # ── relauncher esterno (.bat) ─────────────────────────────────────
-        # PRIMA si avviava il nuovo exe direttamente dal processo morente:
-        # inaffidabile, il nuovo non partiva. Ora un piccolo script attende la
-        # chiusura COMPLETA di questo processo (via PID), poi avvia il nuovo exe
-        # in un contesto pulito e ripulisce .old + se stesso.
-        bat_path = os.path.join(exe_dir, f"{stem}_update.bat")
-        pid = os.getpid()
-        bat = (
-            "@echo off\r\n"
-            ":wait\r\n"
-            "ping -n 2 127.0.0.1 >nul\r\n"   # ~1s di attesa (timeout fallisce senza console)
-            f'tasklist /fi "PID eq {pid}" 2>nul | find "{pid}" >nul && goto wait\r\n'
-            f'start "" "{exe_path}"\r\n'      # avvia il nuovo exe a processo vecchio chiuso
-            f'del "{old_exe}" >nul 2>&1\r\n'  # rimuove la versione precedente
-            'del "%~f0" >nul 2>&1\r\n'        # lo script cancella se stesso
-        )
+        # ── lancia lo staging in modalità --apply-update ──────────────────
+        # _RESTARTING=True così l'atexit _kill_process_tree NON usa /T: il nuovo
+        # processo (figlio) deve sopravvivere alla chiusura di questo.
         try:
-            with open(bat_path, "w", encoding="mbcs", errors="ignore", newline="") as f:
-                f.write(bat)
+            _RESTARTING = True
+            DET = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            NPG = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
             subprocess.Popen(
-                ["cmd", "/c", bat_path],
-                creationflags=subprocess.CREATE_NO_WINDOW
-                              | subprocess.CREATE_NEW_PROCESS_GROUP,
-                cwd=exe_dir, close_fds=True,
-            )
+                [staging, "--apply-update", exe_path, str(os.getpid())],
+                creationflags=DET | NPG)
             self.after(0, self.destroy)
         except Exception as e:
-            # fallback: prova ad avviare comunque il nuovo exe già al suo posto
-            try:
-                os.startfile(exe_path)
-                self.after(0, self.destroy)
-            except Exception:
-                self.after(0, lambda err=str(e): messagebox.showerror(
-                    "Errore aggiornamento",
-                    f"Aggiornamento installato, ma riavvio automatico non riuscito:\n{err}\n\n"
-                    f"Avvia manualmente WeldDetector.exe dalla cartella del programma.",
-                    parent=self))
+            _RESTARTING = False
+            if os.path.isfile(staging):
+                try: os.remove(staging)
+                except Exception: pass
+            self.after(0, lambda err=str(e): messagebox.showerror(
+                "Errore aggiornamento",
+                f"Impossibile avviare l'aggiornamento:\n{err}\n\n"
+                f"Scarica manualmente da:\n"
+                f"https://github.com/{self._GITHUB_REPO}/releases/latest",
+                parent=self))
+            self.after(0, lambda: self.title(
+                f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
 
     # ── STYLE ─────────────────────────────────────────────────
     def _style(self):
@@ -2868,6 +2892,9 @@ class WeldViewerApp(tk.Tk):
         "autoexp_db_numbers":  "28010,28160,28300,28320,28340,28360,28380,28400,28420,28440",
         "autoexp_db_enabled":  "1,1,1,1,1,1,1,1,1,1",
         "autoexp_db_viewer":   "0",
+        # Aggiornamenti automatici
+        "auto_update":         "true",
+        "check_interval_min":  "60",
     }
 
     def _first_run_settings(self):
@@ -2933,6 +2960,10 @@ class WeldViewerApp(tk.Tk):
                 "autoexp_db_enabled": s.get("autoexp_db_enabled", _d["autoexp_db_enabled"]),
                 "autoexp_db_viewer":  s.get("autoexp_db_viewer",  "0"),
             }
+            cp["Update"] = {
+                "auto_update":        s.get("auto_update",        "true"),
+                "check_interval_min": s.get("check_interval_min", "60"),
+            }
             with open(self._SETTINGS_FILE, "w", encoding="utf-8") as f:
                 cp.write(f)
             return self._SETTINGS_FILE
@@ -2950,7 +2981,7 @@ class WeldViewerApp(tk.Tk):
         dlg.title("Prima configurazione  --  WeldDetecto v50" if first_run else
                   "Impostazioni  --  WeldDetecto v50")
         dlg.configure(bg=DARK_BG)
-        dlg.geometry("530x390")
+        dlg.geometry("530x500")
         dlg.resizable(False, False)
         dlg.grab_set()
         s = self._settings
@@ -2994,11 +3025,31 @@ class WeldViewerApp(tk.Tk):
                    ).pack(side="left")
         fields["sqlite_path"] = sv_sql
 
+        # -- Aggiornamenti automatici
+        upd_lf = ttk.LabelFrame(dlg, text="  Aggiornamenti automatici  ", padding=10)
+        upd_lf.pack(fill="x", padx=14, pady=4)
+        sv_auto_update = tk.BooleanVar(
+            value=str(s.get("auto_update", "true")).lower() in ("1", "true", "yes", "on"))
+        tk.Checkbutton(
+            upd_lf, text="Abilita aggiornamenti automatici",
+            variable=sv_auto_update, bg=DARK_BG, fg=TEXT_CLR, selectcolor="#1f6feb",
+            activebackground=DARK_BG, font=("Consolas", 10), anchor="w"
+        ).pack(fill="x", pady=(0, 4))
+        r_int = ttk.Frame(upd_lf); r_int.pack(fill="x")
+        ttk.Label(r_int, text="Controlla ogni:", style="Muted.TLabel", width=22).pack(side="left")
+        sv_chk_int = tk.StringVar(value=str(s.get("check_interval_min", "60")))
+        ttk.Entry(r_int, textvariable=sv_chk_int, width=6).pack(side="left", padx=4)
+        ttk.Label(r_int, text="minuti", style="Muted.TLabel").pack(side="left")
+
         # -- Bottoni
         bf = ttk.Frame(dlg); bf.pack(fill="x", padx=14, pady=12)
 
         def _save():
             for k, sv in fields.items(): self._settings[k] = sv.get()
+            # Aggiornamenti automatici
+            self._settings["auto_update"] = "true" if sv_auto_update.get() else "false"
+            _ci = sv_chk_int.get().strip()
+            self._settings["check_interval_min"] = _ci if (_ci.isdigit() and int(_ci) >= 1) else "60"
             for attr, key in [("_pv_plc_ip", "plc_ip"),
                                ("_pv_plc_rack", "plc_rack"),
                                ("_pv_plc_slot", "plc_slot"),
@@ -3014,6 +3065,15 @@ class WeldViewerApp(tk.Tk):
             p = self._save_settings()
             if p:
                 self.app_log(f"Impostazioni salvate: {p}", "ok")
+            # Riprogramma il controllo aggiornamenti con i nuovi parametri
+            try:
+                if getattr(self, "_update_check_timer", None):
+                    self.after_cancel(self._update_check_timer)
+                    self._update_check_timer = None
+                if sv_auto_update.get():
+                    self.after(300, self._schedule_update_check)
+            except Exception:
+                pass
             dlg.destroy()
 
         ttk.Button(bf, text="Salva", style="Accent.TButton", width=14,
@@ -9087,6 +9147,14 @@ class WeldViewerApp(tk.Tk):
 # ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+
+    # ── Modalità staging auto-update: «<staging>.upd --apply-update <target> <old_pid>» ──
+    # Il nuovo exe si copia sopra il vecchio (stesso nome/posizione) e lo riavvia.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--apply-update":
+        _tgt = sys.argv[2]
+        try:    _pid = int(sys.argv[3]) if len(sys.argv) >= 4 else 0
+        except Exception: _pid = 0
+        _apply_update_and_relaunch(_tgt, _pid)   # termina con os._exit
 
     # ── Gestione --replace=<vecchio_exe> (passato dalla versione precedente) ──
     # Il vecchio exe è già chiuso: aspettiamo 2s in background poi lo cancelliamo
