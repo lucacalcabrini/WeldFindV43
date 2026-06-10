@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.45"
+APP_VERSION = "5.0.46"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -1397,6 +1397,8 @@ class WeldViewerApp(tk.Tk):
         self.after(300, self._check_for_updates)
         # Controlla librerie all'avvio (non bloccante)
         self.after(500, self._startup_check_libs)
+        # Ripresa Auto Export se era attivo durante un aggiornamento (one-shot)
+        self.after(1200, self._autoexp_check_resume)
         # Cleanup alla chiusura
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -1544,6 +1546,14 @@ class WeldViewerApp(tk.Tk):
             f"Scarico e riavvio ora?",
             parent=self
         ):
+            # Cattura ORA (main thread) la config Auto Export, così se è attivo
+            # potrà essere ripreso dopo il riavvio. Il flag di ripresa verrà
+            # impostato solo a swap riuscito, dentro _download_and_restart.
+            try:
+                if getattr(self, "_autoexp_running", False):
+                    self._autoexp_collect_config()
+            except Exception:
+                pass
             import threading
             threading.Thread(
                 target=self._download_and_restart,
@@ -1650,6 +1660,17 @@ class WeldViewerApp(tk.Tk):
             self.after(0, lambda: self.title(
                 f"WeldDetector DB Analyzer  {APP_RELEASE}  —  SCL v4.7"))
             return
+
+        # ── se l'Auto Export è in corso, imposta il flag di ripresa ──
+        # La config è già stata catturata sul main thread in _offer_update
+        # (qui siamo in un thread di background: niente accessi a variabili Tk).
+        # Al riavvio il programma rileggerà il flag e riavvierà il monitoraggio.
+        try:
+            if getattr(self, "_autoexp_running", False):
+                self._settings["autoexp_resume"] = "1"
+                self._save_settings()
+        except Exception:
+            pass
 
         # ── relauncher esterno (.bat) ─────────────────────────────────────
         # PRIMA si avviava il nuovo exe direttamente dal processo morente:
@@ -2836,6 +2857,17 @@ class WeldViewerApp(tk.Tk):
         "sim_window_default":  "2.8",
         "sim_sigma_default":   "2.8",
         "sim_mabs_default":    "0.5",
+        # Auto Export — persistenza config per ripresa dopo aggiornamento
+        "autoexp_resume":      "0",
+        "autoexp_trigger":     "bStart_Prev ↓",
+        "autoexp_poll":        "100",
+        "autoexp_path_ok":     "",
+        "autoexp_path_rej":    "",
+        "autoexp_save_file":   "0",
+        "autoexp_save_sql":    "1",
+        "autoexp_db_numbers":  "28010,28160,28300,28320,28340,28360,28380,28400,28420,28440",
+        "autoexp_db_enabled":  "1,1,1,1,1,1,1,1,1,1",
+        "autoexp_db_viewer":   "0",
     }
 
     def _first_run_settings(self):
@@ -2887,6 +2919,19 @@ class WeldViewerApp(tk.Tk):
                 "sim_window_default":  s.get("sim_window_default",  "2.8"),
                 "sim_sigma_default":   s.get("sim_sigma_default",   "2.8"),
                 "sim_mabs_default":    s.get("sim_mabs_default",    "0.5"),
+            }
+            _d = self._SETTINGS_DEFAULTS
+            cp["AutoExport"] = {
+                "autoexp_resume":     s.get("autoexp_resume",     "0"),
+                "autoexp_trigger":    s.get("autoexp_trigger",    _d["autoexp_trigger"]),
+                "autoexp_poll":       s.get("autoexp_poll",       "100"),
+                "autoexp_path_ok":    s.get("autoexp_path_ok",    ""),
+                "autoexp_path_rej":   s.get("autoexp_path_rej",   ""),
+                "autoexp_save_file":  s.get("autoexp_save_file",  "0"),
+                "autoexp_save_sql":   s.get("autoexp_save_sql",   "1"),
+                "autoexp_db_numbers": s.get("autoexp_db_numbers", _d["autoexp_db_numbers"]),
+                "autoexp_db_enabled": s.get("autoexp_db_enabled", _d["autoexp_db_enabled"]),
+                "autoexp_db_viewer":  s.get("autoexp_db_viewer",  "0"),
             }
             with open(self._SETTINGS_FILE, "w", encoding="utf-8") as f:
                 cp.write(f)
@@ -5104,6 +5149,71 @@ class WeldViewerApp(tk.Tk):
         for i, row in enumerate(self._ae_db_rows):
             if i != selected_idx:
                 row["viewer"].set(False)
+
+    # ── Persistenza config Auto Export (per ripresa dopo aggiornamento) ──
+    def _autoexp_collect_config(self):
+        """Copia la configurazione Auto Export dalle variabili UI in self._settings."""
+        try:
+            self._settings["autoexp_trigger"]   = self._pv_autoexp_trigger.get()
+            self._settings["autoexp_poll"]      = (self._pv_autoexp_poll.get().strip() or "100")
+            self._settings["autoexp_path_ok"]   = self._pv_autoexp_path.get()
+            self._settings["autoexp_path_rej"]  = self._pv_autoexp_path_rej.get()
+            self._settings["autoexp_save_file"] = "1" if self._pv_autoexp_save_file.get() else "0"
+            self._settings["autoexp_save_sql"]  = "1" if self._pv_autoexp_save_sql.get() else "0"
+            nums, ens, viewer = [], [], "0"
+            for i, row in enumerate(self._ae_db_rows):
+                nums.append(row["db"].get().strip())
+                ens.append("1" if row["en"].get() else "0")
+                if row["viewer"].get():
+                    viewer = str(i)
+            self._settings["autoexp_db_numbers"] = ",".join(nums)
+            self._settings["autoexp_db_enabled"] = ",".join(ens)
+            self._settings["autoexp_db_viewer"]  = viewer
+        except Exception:
+            pass
+
+    def _autoexp_restore_config(self):
+        """Ripristina la configurazione Auto Export salvata nelle variabili UI."""
+        s = self._settings
+        try:
+            if s.get("autoexp_trigger"):
+                self._pv_autoexp_trigger.set(s["autoexp_trigger"])
+            if s.get("autoexp_poll"):
+                self._pv_autoexp_poll.set(s["autoexp_poll"])
+            self._pv_autoexp_path.set(s.get("autoexp_path_ok", ""))
+            self._pv_autoexp_path_rej.set(s.get("autoexp_path_rej", ""))
+            self._pv_autoexp_save_file.set(str(s.get("autoexp_save_file", "0")) == "1")
+            self._pv_autoexp_save_sql.set(str(s.get("autoexp_save_sql", "1")) == "1")
+            nums = (s.get("autoexp_db_numbers", "") or "").split(",")
+            ens  = (s.get("autoexp_db_enabled", "") or "").split(",")
+            try:    viewer_i = int(s.get("autoexp_db_viewer", "0"))
+            except Exception: viewer_i = 0
+            for i, row in enumerate(self._ae_db_rows):
+                if i < len(nums):
+                    row["db"].set(nums[i])
+                if i < len(ens):
+                    row["en"].set(ens[i] == "1")
+                row["viewer"].set(i == viewer_i)
+        except Exception:
+            pass
+
+    def _autoexp_check_resume(self):
+        """All'avvio: se l'Auto Export era attivo durante un aggiornamento,
+        ripristina la configurazione e riavvia il monitoraggio (one-shot)."""
+        if str(self._settings.get("autoexp_resume", "0")) != "1":
+            return
+        # Consuma subito il flag e persiste (così non si ripete al prossimo avvio)
+        self._settings["autoexp_resume"] = "0"
+        try: self._save_settings()
+        except Exception: pass
+        self._autoexp_restore_config()
+        if hasattr(self, "_pv_autoexp_ip_label"):
+            self._pv_autoexp_ip_label.set(
+                self._settings.get("plc_ip", self._SETTINGS_DEFAULTS["plc_ip"]))
+        try: self.app_log("Ripresa Auto Export dopo aggiornamento...", "info")
+        except Exception: pass
+        # Avvia (la connessione PLC e gli errori sono gestiti da _autoexp_start)
+        self.after(0, self._autoexp_start)
 
     def _autoexp_start(self):
         """Avvia monitoraggio multi-DB (fino a 10 DB simultanei)."""
