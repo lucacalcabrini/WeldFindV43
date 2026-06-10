@@ -78,7 +78,7 @@ Build EXE: pyinstaller --onefile --windowed weld_viewer.py
 #   - import itertools, matplotlib.colors spostati a top-level
 #   - _plc_log_msg: rimosso update_idletasks() per-riga (overhead UI)
 #   - _rt_poll: hasattr() → attributo inizializzato in _rt_start
-APP_VERSION = "5.0.47"
+APP_VERSION = "5.0.48"
 APP_BUILD   = "2026-05-20"
 APP_RELEASE = f"v{APP_VERSION} build {APP_BUILD}"
 
@@ -1548,13 +1548,17 @@ class WeldViewerApp(tk.Tk):
                     except Exception:
                         pass
 
+    def _auto_update_on(self):
+        """True se gli aggiornamenti automatici sono abilitati nelle Impostazioni."""
+        return str(self._settings.get("auto_update", "true")).lower() in ("1", "true", "yes", "on")
+
     def _schedule_update_check(self):
-        """Controllo aggiornamenti periodico — attivo solo se auto_update=true.
-        Si ripianifica ogni check_interval_min minuti."""
-        au = str(self._settings.get("auto_update", "true")).lower() in ("1", "true", "yes", "on")
-        if not au:
-            return
+        """Controlla gli aggiornamenti. Con auto_update=ON ripianifica ogni
+        check_interval_min minuti (controllo continuo + auto-apply); con OFF
+        resta un solo controllo all'avvio (e chiede conferma prima di aggiornare)."""
         self._check_for_updates()
+        if not self._auto_update_on():
+            return  # flag OFF: solo controllo all'avvio, niente periodico
         try:
             mins = max(1, int(self._settings.get("check_interval_min", "60")))
         except (ValueError, TypeError):
@@ -1606,12 +1610,22 @@ class WeldViewerApp(tk.Tk):
 
     def _offer_update(self, new_ver, url, filename, size_bytes):
         size_mb = size_bytes / 1024 / 1024
-        # Aggiornamento automatico: nessun prompt (il comportamento è governato
-        # dal flag auto_update nelle Impostazioni). Registra e procede.
-        try:
-            self.app_log(f"⬇  v{new_ver} disponibile ({size_mb:.1f} MB) — download…", "info")
-        except Exception:
-            pass
+        if self._auto_update_on():
+            # Flag ON → aggiornamento automatico, nessun prompt (solo log)
+            try:
+                self.app_log(f"⬇  v{new_ver} disponibile ({size_mb:.1f} MB) — download…", "info")
+            except Exception:
+                pass
+        else:
+            # Flag OFF → controllo solo all'avvio: chiedi conferma all'utente
+            if not messagebox.askyesno(
+                "🔄 Aggiornamento disponibile",
+                f"Versione  v{new_ver}  disponibile!\n"
+                f"Versione attuale:  v{APP_VERSION}\n\n"
+                f"Dimensione:  {size_mb:.1f} MB\n\n"
+                f"Scarico e riavvio ora?",
+                parent=self):
+                return
         # Cattura ORA (main thread) la config Auto Export, così se è attivo potrà
         # essere ripreso dopo il riavvio. Il flag di ripresa verrà impostato a
         # download riuscito dentro _download_and_restart (qui siamo sul main thread).
